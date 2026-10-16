@@ -42,6 +42,9 @@ class Recorder:
         discover_every_s: float = 60.0,
         settle_every_s: float = 300.0,
         on_minute: Callable[[], Awaitable[object]] | None = None,
+        on_message: Callable[[Any, int], None] | None = None,
+        on_market: Callable[[Any, str], None] | None = None,
+        background: Sequence[Callable[[], Awaitable[object]]] = (),
     ) -> None:
         self.rest = rest
         self.ws = ws
@@ -51,6 +54,9 @@ class Recorder:
         self.discover_every_s = discover_every_s
         self.settle_every_s = settle_every_s
         self.on_minute = on_minute  # e.g. publish a dashboard snapshot; failures are logged
+        self.on_message = on_message  # live engine state updates (every WS message)
+        self.on_market = on_market  # live engine market registry (every discovery pass)
+        self.background = list(background)  # long-running tasks (engine loop, feeds)
         self.subscribed: set[str] = set()
         self.settled: set[str] = set()
         self.messages = 0
@@ -103,6 +109,8 @@ class Recorder:
         seen = now_ms()
         for series in self.series:
             for m in await self.rest.markets(series, status="open"):
+                if self.on_market is not None:
+                    self.on_market(m, series)
                 if m.ticker not in self.subscribed:
                     self.subscribed.add(m.ticker)
                     self.sink.add("markets", market_row(series, m, seen))
@@ -138,6 +146,8 @@ class Recorder:
         async for msg in self.ws.messages():
             recv = now_ms()
             self.messages += 1
+            if self.on_message is not None:
+                self.on_message(msg, recv)
             for stream, row in message_rows(msg, recv):
                 self.sink.add(stream, row)
                 if stream == "trades":
@@ -154,6 +164,15 @@ class Recorder:
             self.sink.rows_written,
         )
 
+    async def _guard(self, job: Callable[[], Awaitable[object]]) -> None:
+        """Restart a background job after a crash instead of killing the recorder."""
+        while True:
+            try:
+                await job()
+            except Exception:
+                log.exception("background job %s crashed; restarting in 5s", job)
+            await asyncio.sleep(5.0)
+
     async def run(self) -> None:
         try:
             async with asyncio.TaskGroup() as tg:
@@ -163,6 +182,8 @@ class Recorder:
                 tg.create_task(self.stream())
                 if self.on_minute is not None:
                     tg.create_task(self._every(60.0, "on_minute", self.on_minute))
+                for job in self.background:
+                    tg.create_task(self._guard(job))
         finally:
             self.sink.flush_all()
             await self.ws.close()

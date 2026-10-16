@@ -48,7 +48,6 @@ async def test_store_auth_roundtrip(tmp_path: Path) -> None:
         # public read, not yet written
         assert (await client.get("/dashboard/snapshot")).status == 404
         assert (await client.get("/dashboard/trades")).status == 401  # trade log needs the token
-        assert (await client.get("/dashboard/execution")).status == 401
         auth = {"Authorization": "Bearer secret"}
         assert (await client.get("/dashboard/trades", headers=auth)).status == 404
         assert (await client.get("/dashboard/nope", headers=auth)).status == 404

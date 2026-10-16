@@ -68,3 +68,27 @@ button.danger { color: var(--bad); border-color: #744152; }
 .control-notice { margin-top: 12px; font-size: 12px; }
 footer { margin-top: 34px; font-size: 12px; } footer a { color: var(--accent-2); }
 @media (max-width: 760px) { body { display: block; } .sidebar { width: auto; padding: 16px; border-right: 0; border-bottom: 1px solid var(--border); } .brand { margin: 0 0 15px; } nav { display: flex; flex-wrap: wrap; } nav a { padding: 6px 9px; font-size: 12px; } .side-status { display: none; } main { padding: 18px 16px 30px; } .hero { grid-template-columns: 1fr; } .topbar { align-items: flex-start; } .topbar-right { gap: 8px; } .chart-large { height: 320px; } .chart-equity { height: 220px; } .control-grid { grid-template-columns: 1fr; } }
+
+/* ---- Live Calls cards ---------------------------------------------------- */
+.calls { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.call { padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: rgba(16,27,46,.92); }
+.call-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.call-q { font-weight: 700; font-size: 15px; }
+.call-sub { color: var(--muted); font-size: 12px; }
+.badge { display: inline-block; margin: 12px 0 6px; padding: 8px 14px; border-radius: 10px; font-size: 20px; font-weight: 800; letter-spacing: .04em; }
+.badge.up { color: #031a18; background: var(--good); }
+.badge.down { color: #2a0612; background: var(--bad); }
+.badge.wait { color: var(--muted); background: #1a2a42; }
+.badge.hold { color: #031329; background: var(--accent-2); }
+.badge.sell { color: #2b1c00; background: var(--warn); }
+.reason { margin: 4px 0 10px; color: var(--text); }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; }
+.kv dt { color: var(--muted); cursor: help; border-bottom: 1px dotted #3b5a7a; justify-self: start; }
+.kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.gates { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.gate { font-size: 11px; padding: 2px 7px; border-radius: 99px; cursor: help; }
+.gate.ok { color: var(--good); background: var(--good-bg); }
+.gate.no { color: var(--bad); background: var(--bad-bg); }
+.position { margin-top: 10px; padding: 8px 10px; border-radius: 9px; background: #13233a; font-size: 13px; }
+[title] { cursor: help; }
+.banner { padding: 12px 14px; border-radius: 12px; border: 1px solid #5c4a1c; background: var(--warn-bg); color: var(--warn); margin-bottom: 14px; }

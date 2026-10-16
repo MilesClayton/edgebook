@@ -1,4 +1,4 @@
-"""Coinbase Exchange public level-2 and match feed.
+"""Coinbase Exchange public ticker (best bid/offer), level-2 and match feed.
 
 Message formats follow the public ``level2_batch`` and ``matches`` channels:
 https://docs.cdp.coinbase.com/exchange/websocket-feed/channels
@@ -62,6 +62,29 @@ class CoinbaseParser:
                 )
             ]
 
+        if kind == "ticker":
+            # Public best bid/offer (level2 channels now require authentication).
+            vals = [
+                number(data.get(k))
+                for k in ("best_bid", "best_ask", "best_bid_size", "best_ask_size")
+            ]
+            if any(v is None for v in vals):
+                return []
+            bid, ask, bsz, asz = (float(v or 0.0) for v in vals)
+            if not 0 < bid < ask or bsz < 0 or asz < 0:
+                return []
+            return [
+                BookQuote(
+                    venue="coinbase",
+                    symbol=self.product_id,
+                    bid=bid,
+                    bid_size=bsz,
+                    ask=ask,
+                    ask_size=asz,
+                    event_ts_ms=event_ms,
+                    received_ts_ms=received_ms,
+                )
+            ]
         if kind == "snapshot":
             bids: dict[float, float] = {}
             asks: dict[float, float] = {}
@@ -150,7 +173,7 @@ class CoinbaseFeed:
                             {
                                 "type": "subscribe",
                                 "product_ids": [self.product_id],
-                                "channels": ["level2_batch", "matches", "heartbeat"],
+                                "channels": ["ticker", "matches", "heartbeat"],
                             }
                         )
                     )

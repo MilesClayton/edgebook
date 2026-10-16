@@ -1,611 +1,294 @@
-// edgebook dashboard. Page structure (sidebar router, metric-card rows,
-// refresh control, Plotly panels) adapted from ryanfrigo/kalshi-ai-trading-bot
+// edgebook dashboard. Page structure (sidebar router, metric cards, refresh
+// control, Plotly panels) adapted from ryanfrigo/kalshi-ai-trading-bot
 // scripts/trading_dashboard.py, MIT License; see THIRD_PARTY_LICENSES.md.
+//
+// Every number carries a plain-English hover description (title attribute).
 "use strict";
 
-const PAGES = {
-  overview: "Overview",
-  live: "Live Markets",
-  paper: "Paper Session",
-  lab: "Strategy Lab",
-  calibration: "Calibration",
-  trades: "Trades",
-  health: "System Health",
-};
-const cache = {};
-let page = "overview";
+const PAGES = { live: "Live Calls", paper: "Paper $500k", research: "Research", calibration: "Calibration", system: "System" };
+const REFRESH_MS = { live: 3000, paper: 5000, system: 5000 };
+let page = "live";
 let timer = null;
 
-// ---------- data ----------
-async function load(kind, fresh = false) {
-  if (!fresh && cache[kind] && Date.now() - cache[kind].at < 20_000) return cache[kind].v;
+// ---------------------------------------------------------------- data
+async function load(kind) {
   try {
     const r = await fetch(`/api/data?kind=${kind}`, { cache: "no-store" });
-    const v = r.ok ? await r.json() : null;
-    cache[kind] = { v, at: Date.now() };
-    return v;
+    return r.ok ? await r.json() : null;
   } catch {
     return null;
   }
 }
 
-// ---------- tiny DOM helpers (textContent only; no HTML injection) ----------
+// ---------------------------------------------------------------- helpers
 function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v == null) continue;
     if (k === "class") n.className = v;
     else n.setAttribute(k, v);
   }
-  for (const k of kids.flat()) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return n;
 }
 const fmt = {
   usd: (x, d = 2) => (x == null ? "–" : `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`),
-  c: (x) => (x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}¢`),
-  p: (x) => (x == null ? "–" : Number(x).toFixed(3)),
-  n: (x) => (x == null ? "–" : Number(x).toLocaleString()),
-  ago: (iso) => {
-    if (!iso) return "never";
-    const s = (Date.now() - Date.parse(iso)) / 1000;
-    return s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${(s / 3600).toFixed(1)}h ago`;
-  },
+  cents: (x) => (x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}¢`),
+  price: (x) => (x == null ? "–" : `${(x * 100).toFixed(0)}¢`),
+  pct: (x) => (x == null ? "–" : `${(x * 100).toFixed(0)}%`),
+  n: (x) => (x == null ? "–" : Number(x).toLocaleString(undefined, { maximumFractionDigits: 0 })),
+  age: (ms) => (ms == null ? "–" : ms < 1500 ? `${(ms / 1000).toFixed(1)}s` : ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60000)}m`),
+  left: (s) => (s == null ? "–" : s >= 3600 ? `${(s / 3600).toFixed(1)}h` : s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.max(0, Math.round(s))}s`),
+  time: (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }),
 };
-function card(k, v, s = "", tone = "") {
-  return el("div", { class: `card ${tone}` }, el("div", { class: "k" }, k), el("div", { class: "v" }, v), el("div", { class: "s" }, s));
+function card(label, value, sub, tip, tone = "") {
+  return el("div", { class: `card ${tone}`, title: tip }, el("div", { class: "k" }, label), el("div", { class: "v" }, value), el("div", { class: "s" }, sub ?? ""));
+}
+function kv(rows) {
+  const dl = el("dl", { class: "kv" });
+  for (const [label, value, tip, tone] of rows) dl.append(el("dt", { title: tip }, label), el("dd", { class: tone ?? "" }, value));
+  return dl;
 }
 function table(cols, rows) {
-  const head = el("tr", {}, cols.map((c) => el("th", {}, c.label)));
-  const body = rows.map((r, i) =>
-    el("tr", {}, cols.map((c) => {
-      const v = c.get(r, i);
-      const td = el("td", {}, c.fmt ? c.fmt(v) : v ?? "–");
-      if (c.tone && v != null) td.className = v > 0 ? "pos" : v < 0 ? "neg" : "";
-      return td;
-    })),
-  );
+  const head = el("tr", {}, cols.map((c) => el("th", { title: c.tip }, c.label)));
+  const body = rows.map((r) => el("tr", {}, cols.map((c) => {
+    const v = c.get(r);
+    const td = el("td", {}, c.fmt ? c.fmt(v) : v ?? "–");
+    if (c.tone && typeof v === "number") td.className = v > 0 ? "pos" : v < 0 ? "neg" : "";
+    return td;
+  })));
   return el("div", { class: "panel" }, el("table", {}, el("thead", {}, head), el("tbody", {}, body)));
 }
 function empty(msg) {
-  return el("div", { class: "panel empty" }, msg);
+  return el("div", { class: "empty" }, msg);
 }
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 function plot(node, traces, layout = {}) {
-  if (!window.Plotly) return;
-  const base = {
-    margin: { l: 50, r: 16, t: 30, b: 40 },
+  if (!window.Plotly) {
+    node.replaceWith(empty("Charts are still loading; refresh in a moment."));
+    return;
+  }
+  const axis = { gridcolor: css("--border"), zerolinecolor: css("--border") };
+  Plotly.newPlot(node, traces, {
+    margin: { l: 60, r: 16, t: 34, b: 40 },
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: css("--text"), size: 12 },
-    xaxis: { gridcolor: css("--border") },
-    yaxis: { gridcolor: css("--border") },
+    xaxis: axis,
+    yaxis: axis,
     legend: { orientation: "h", y: -0.2 },
-  };
-  Plotly.newPlot(node, traces, { ...base, ...layout }, { displayModeBar: false, responsive: true });
+    hovermode: "x unified",
+    ...layout,
+  }, { displayModeBar: false, responsive: true });
 }
 
-function spotChart(node, series) {
-  const data = series.map(([time, value]) => {
-    const raw = typeof time === "number" ? time : Date.parse(time);
-    return { time: Math.floor(raw < 1e12 ? raw : raw / 1000), value: Number(value) };
-  })
-    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
-  if (data.length < 2) {
-    node.replaceWith(empty("BTC reference data is not available in this snapshot."));
-    return;
-  }
-  if (!window.Plotly) return spotSvg(node, data);
-  const rising = data.at(-1).value >= data[0].value;
-  const color = rising ? css("--accent") : css("--bad");
-  plot(node, [{
-    x: data.map((point) => new Date(point.time * 1000)),
-    y: data.map((point) => point.value),
-    type: "scatter", mode: "lines", name: "BTC-USD reference", fill: "tozeroy",
-    line: { color, width: 2.5, shape: "spline", smoothing: 0.45 },
-    fillcolor: rising ? "rgba(114,241,197,.12)" : "rgba(255,139,158,.10)",
-    hovertemplate: "%{x|%b %-d, %H:%M}<br><b>$%{y:,.2f}</b><extra></extra>",
-  }], {
-    margin: { l: 70, r: 20, t: 18, b: 42 }, hovermode: "x unified", showlegend: false,
-    xaxis: { gridcolor: css("--border"), rangeslider: { visible: false }, fixedrange: false },
-    yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f", side: "right", fixedrange: false },
-  });
+const TIP = {
+  action: "The engine's call right now. BUY UP/DOWN only when its model thinks the contract is cheap by at least the minimum edge after fees and every data check passes. HOLD/SELL appear when the paper account owns this market.",
+  fair: "Model's probability that UP wins, from the live CF Benchmarks index (the price Kalshi settles on), time left, and recent volatility. Inside the last 60 s it uses the part of the settlement average already printed.",
+  upPrice: "What one UP (YES) contract costs right now: the lowest offer in Kalshi's order book. It pays $1 if UP wins.",
+  downPrice: "What one DOWN (NO) contract costs right now. It pays $1 if DOWN wins.",
+  edge: "Expected profit per contract if you buy now and hold to settlement: model chance − price − Kalshi's taker fee. Positive = cheap, negative = expensive.",
+  index: "CF Benchmarks BRTI, the bitcoin index Kalshi uses to settle these markets, streamed live (about once a second).",
+  strike: "The level the settlement average must reach. For 15-minute markets it's the 60-second average at the start of the window.",
+  left: "Time until the market closes. Settlement is the average of the index over the final 60 seconds.",
+  spread: "Gap between the best offer and the best bid for UP. Wide spreads cost you more to get in and out.",
+  depth: "Contracts available at the best price right now. Bigger orders fill at worse prices.",
+  vol: "How much the index moves per minute lately (in basis points; 1 bp = 0.01%). Higher volatility = less certainty.",
+};
+
+function questionFor(c) {
+  const close = new Date((Date.now() / 1000 + c.seconds_left) * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (c.series === "KXBTC15M") return [`BTC up by ${close}?`, `15-min market · UP if the closing average ≥ the opening average (${fmt.usd(c.strike)})`];
+  return [`BTC above ${fmt.usd(c.strike, 0)} at ${close}?`, "Hourly market · UP = above the strike at close"];
+}
+function badgeFor(action) {
+  const cls = { "BUY UP": "up", "BUY DOWN": "down", HOLD: "hold", SELL: "sell" }[action] ?? "wait";
+  return el("div", { class: `badge ${cls}`, title: TIP.action }, action);
 }
 
-function spotSvg(node, data) {
-  const width = 1100, height = 390, pad = { top: 26, right: 84, bottom: 42, left: 20 };
-  const values = data.map((point) => point.value), low = Math.min(...values), high = Math.max(...values);
-  const range = high - low || 1, innerW = width - pad.left - pad.right, innerH = height - pad.top - pad.bottom;
-  const x = (i) => pad.left + i / (data.length - 1) * innerW;
-  const y = (value) => pad.top + (high - value) / range * innerH;
-  const path = values.map((value, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(value).toFixed(1)}`).join(" ");
-  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("class", "spot-svg"); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  const defs = document.createElementNS(ns, "defs"), gradient = document.createElementNS(ns, "linearGradient");
-  gradient.setAttribute("id", "spot-fill"); gradient.setAttribute("x1", "0"); gradient.setAttribute("x2", "0"); gradient.setAttribute("y1", "0"); gradient.setAttribute("y2", "1");
-  [["0%", "#72f1c5", ".32"], ["100%", "#72f1c5", "0"]].forEach(([offset, color, opacity]) => { const stop = document.createElementNS(ns, "stop"); stop.setAttribute("offset", offset); stop.setAttribute("stop-color", color); stop.setAttribute("stop-opacity", opacity); gradient.append(stop); });
-  defs.append(gradient); svg.append(defs);
-  for (const r of [0, .25, .5, .75, 1]) {
-    const yy = pad.top + r * innerH, value = high - r * range;
-    const grid = document.createElementNS(ns, "line"); grid.setAttribute("x1", String(pad.left)); grid.setAttribute("x2", String(width - pad.right)); grid.setAttribute("y1", String(yy)); grid.setAttribute("y2", String(yy)); grid.setAttribute("class", "spot-grid"); svg.append(grid);
-    const label = document.createElementNS(ns, "text"); label.setAttribute("x", String(width - pad.right + 10)); label.setAttribute("y", String(yy + 4)); label.setAttribute("class", "spot-label"); label.textContent = fmt.usd(value, 0); svg.append(label);
-  }
-  const area = document.createElementNS(ns, "path"); area.setAttribute("d", `${path} L${x(data.length - 1)} ${pad.top + innerH} L${x(0)} ${pad.top + innerH} Z`); area.setAttribute("fill", "url(#spot-fill)"); svg.append(area);
-  const line = document.createElementNS(ns, "path"); line.setAttribute("d", path); line.setAttribute("class", "spot-line"); svg.append(line);
-  const last = document.createElementNS(ns, "circle"); last.setAttribute("cx", String(x(data.length - 1))); last.setAttribute("cy", String(y(values.at(-1)))); last.setAttribute("r", "5"); last.setAttribute("class", "spot-dot"); svg.append(last);
-  [[0, "start"], [Math.floor((data.length - 1) / 2), "middle"], [data.length - 1, "end"]].forEach(([index, anchor]) => { const label = document.createElementNS(ns, "text"); label.setAttribute("x", String(x(index))); label.setAttribute("y", String(height - 12)); label.setAttribute("text-anchor", anchor); label.setAttribute("class", "spot-time"); label.textContent = new Date(data[index].time * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); svg.append(label); });
-  node.replaceChildren(svg);
-}
-
-function equityChart(node, history) {
-  const points = history.map((event) => ({
-    time: Date.parse(event.at), value: Number(event.state?.equity), event: event.event,
-  })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
-  if (!points.length) {
-    node.replaceWith(empty("Equity history begins with the next paper decision."));
-    return;
-  }
-  if (points.length === 1) points.unshift({ ...points[0], time: points[0].time - 1_000 });
-  spotSvg(node, points.map((point) => ({ time: Math.floor(point.time / 1000), value: point.value })));
-}
-
-function executionHistory(history, state) {
-  const config = state?.config ?? {};
-  let cash = Number(config.paper_starting_cash ?? 0);
-  let reserved = 0;
-  let realized = 0;
-  let fees = 0;
-  return history.map((event) => {
-    const detail = event.detail ?? {};
-    if (event.event === "session_started") {
-      cash = Number(config.paper_starting_cash ?? cash);
-      reserved = 0;
-      realized = 0;
-      fees = 0;
-    } else if (event.event === "paper_filled") {
-      cash -= Number(detail.debit ?? 0);
-      reserved += Number(detail.debit ?? 0);
-      fees += Number(detail.fee ?? 0);
-    } else if (event.event === "paper_settled") {
-      cash += Number(detail.payout ?? 0);
-      reserved -= Number(detail.debit ?? 0);
-      realized += Number(detail.pnl ?? 0);
-    }
-    // New records have an authoritative compact snapshot.  Older records are
-    // reconstructed from their fill/settlement detail so the first session is
-    // visible too.
-    const snapshot = event.state ?? {};
-    const point = {
-      cash: Number(snapshot.cash ?? cash),
-      reserved: Number(snapshot.reserved ?? reserved),
-      equity: Number(snapshot.equity ?? cash + reserved),
-      realized_pnl: Number(snapshot.realized_pnl ?? realized),
-      fees: Number(snapshot.fees ?? fees),
-      open_positions: Number(snapshot.open_positions ?? (reserved > 0 ? 1 : 0)),
-      max_drawdown: Number(snapshot.max_drawdown ?? 0),
-    };
-    cash = point.cash;
-    reserved = point.reserved;
-    realized = point.realized_pnl;
-    fees = point.fees;
-    return { ...event, state: point };
-  });
-}
-
-function liveGate(research) {
-  const candidates = [];
-  for (const [series, report] of Object.entries(research?.data?.series ?? {})) {
-    for (const strategy of report.strategies ?? []) {
-      const result = strategy.holdout?.taker?.["0.02"];
-      if (!result) continue;
-      candidates.push({
-        series,
-        name: strategy.name,
-        n: result.n ?? 0,
-        lo: result.ci_lo,
-        brier: strategy.holdout?.brier,
-        marketBrier: strategy.holdout?.market_brier,
-      });
-    }
-  }
-  const approved = candidates.filter((x) =>
-    x.n >= 500 && x.lo > 0 && x.brier <= x.marketBrier,
-  );
-  return { candidates, approved };
-}
-
-function decisionRows(snapshot) {
-  return Object.entries(snapshot?.data?.signals ?? {}).flatMap(([series, list]) =>
-    list.map((signal) => {
-      const side = signal.edge_yes >= signal.edge_no ? "YES" : "NO";
-      const edge = Math.max(signal.edge_yes, signal.edge_no);
-      const entry = side === "YES" ? signal.ask : 1 - signal.bid;
-      const sideFair = side === "YES" ? signal.fair : 1 - signal.fair;
-      return { ...signal, series, side, edge, entry, sideFair, minutes: signal.seconds_left / 60 };
-    }),
-  ).sort((a, b) => b.edge - a.edge);
-}
-
-function ledger(trades) {
-  const list = trades?.data ?? [];
-  const reserved = list.reduce((sum, row) => sum + Number(row.reserved_dollars ?? 0), 0);
-  const cap = list.at(-1)?.session_cap_dollars ?? 5;
-  return { list, cap, reserved, remaining: Math.max(0, cap - reserved) };
-}
-
-function gateReason(gate) {
-  if (gate.approved.length) return "paper evidence is ready for review";
-  const best = gate.candidates.sort((a, b) => (b.lo ?? -Infinity) - (a.lo ?? -Infinity))[0];
-  if (!best) return "no holdout report has been published";
-  if ((best.n ?? 0) < 500) return `only ${fmt.n(best.n)} holdout trades`;
-  if (!(best.lo > 0)) return "the best 95% confidence bound is not positive";
-  return "model calibration is weaker than the market";
-}
-
-// ---------- pages ----------
-async function overview(root) {
-  const [snap, research, trades] = await Promise.all([load("snapshot"), load("research"), load("trades")]);
-  const s = snap?.data;
-  const rec = s?.recorder ?? {};
-  const gate = liveGate(research);
-  const candidates = decisionRows(snap);
-  const lead = candidates[0];
-  const book = ledger(trades);
-  const flow = s?.public_flow ?? {};
-  const flowWindows = flow.windows ?? [];
-  const decision = gate.approved.length && lead?.edge > 0.02 ? "REVIEW" : "OBSERVE";
-  const bestEvidence = gate.candidates.sort((a, b) => (b.lo ?? -Infinity) - (a.lo ?? -Infinity))[0];
-  root.append(
-    el("section", { class: "hero" },
-      el("div", {},
-        el("div", { class: "eyebrow" }, "LIVE DECISION DESK"),
-        el("div", { class: "hero-value" }, fmt.usd(s?.spot, 2)),
-        el("div", { class: "muted" }, `BTC-USD composite · snapshot ${fmt.ago(snap?.received_at)}`),
-      ),
-      el("div", { class: `decision ${decision === "REVIEW" ? "good" : "warn"}` },
-        el("div", { class: "eyebrow" }, "EXECUTION STATE"),
-        el("div", { class: "decision-value" }, decision),
-        el("div", { class: "muted" }, gateReason(gate)),
-      ),
-    ),
-    el("div", { class: "cards" },
-      card("Best quoted edge", lead ? fmt.c(lead.edge) : "–", lead ? `${lead.series} · buy ${lead.side}` : "no live candidate", lead?.edge > 0 ? "good" : ""),
-      card("Entry debit", lead ? fmt.usd(lead.entry) : "–", lead ? `${lead.minutes.toFixed(1)} min to close` : "waiting for market"),
-      card("Best holdout CI low", bestEvidence ? fmt.c(bestEvidence.lo) : "–", bestEvidence ? `${bestEvidence.series} · n=${fmt.n(bestEvidence.n)}` : "no holdout evidence", bestEvidence?.lo > 0 ? "good" : "bad"),
-      card("Session budget", fmt.usd(book.remaining), `${fmt.usd(book.reserved)} reserved of ${fmt.usd(book.cap)}`, book.remaining > 0 ? "good" : "bad"),
-      card("Feed quality", rec.msgs_per_s != null ? `${Math.round(rec.msgs_per_s)}/s` : "–", `${fmt.n(rec.gaps)} gaps · ${fmt.n(rec.reconnects)} reconnects`, rec.gaps ? "bad" : "good"),
-    ),
-  );
-  const chart = el("div", { class: "panel chart chart-large" });
-  root.append(el("h2", {}, "BTC reference price"), chart);
-  const series = s?.spot_series ?? [];
-  if (series.length) {
-    spotChart(chart, series);
-  } else chart.replaceWith(empty("No snapshot yet: the Fly recorder publishes one every minute."));
-
-  root.append(el("h2", {}, "Public trade flow"));
-  root.append(el("p", { class: "muted" }, flow.label ?? "Anonymous public trade flow from Kalshi’s exchange feed."));
-  root.append(flowWindows.length ? el("div", { class: "cards" }, flowWindows.map((window) => {
-    const signed = Number(window.net_yes_contracts ?? 0);
-    const direction = signed > 0 ? "net YES takers" : signed < 0 ? "net NO takers" : "balanced";
-    return card(`${window.seconds / 60} min flow`, `${signed >= 0 ? "+" : ""}${fmt.n(signed)} ct`, `${fmt.n(window.trades)} trades · ${direction}`, signed > 0 ? "good" : signed < 0 ? "bad" : "");
-  })) : empty("Waiting for public trades from the live Kalshi feed."));
-  if (flow.recent?.length) {
-    root.append(table([
-      { label: "Observed", get: (r) => new Date(r.observed_ts_ms).toLocaleTimeString() },
-      { label: "Contract", get: (r) => r.ticker },
-      { label: "Taker", get: (r) => String(r.taker_side).toUpperCase() },
-      { label: "Contracts", get: (r) => r.count, fmt: fmt.n },
-      { label: "YES price", get: (r) => r.yes_price, fmt: fmt.usd },
-    ], flow.recent.slice().reverse()));
-  }
-
-  root.append(el("h2", {}, "Decision queue"));
-  root.append(candidates.length ? table([
-    { label: "Contract", get: (r) => r.ticker },
-    { label: "Side", get: (r) => r.side },
-    { label: "Entry", get: (r) => r.entry, fmt: fmt.usd },
-    { label: "Model P(side)", get: (r) => r.sideFair, fmt: fmt.p },
-    { label: "Net edge", get: (r) => r.edge, fmt: fmt.c, tone: true },
-    { label: "Time left", get: (r) => `${r.minutes.toFixed(1)}m` },
-  ], candidates.slice(0, 6)) : empty("No eligible markets in the latest snapshot."));
-
-  root.append(el("h2", {}, "Research verdict · out of sample after fees"));
-  const rows = [];
-  for (const [series, r] of Object.entries(research?.data?.series ?? {})) {
-    for (const st of r.strategies) {
-      const t = st.holdout.taker["0.02"];
-      rows.push({ series, name: st.name, n: t?.n, mean: t?.mean, lo: t?.ci_lo, hi: t?.ci_hi });
-    }
-  }
-  root.append(rows.length
-    ? table([
-        { label: "Series", get: (r) => r.series },
-        { label: "Strategy", get: (r) => r.name },
-        { label: "Holdout trades", get: (r) => r.n, fmt: fmt.n },
-        { label: "Mean P&L / contract", get: (r) => r.mean, fmt: fmt.c, tone: true },
-        { label: "95% CI", get: (r) => (r.n > 1 ? `${fmt.c(r.lo)} … ${fmt.c(r.hi)}` : "–") },
-        { label: "Verdict", get: (r) => (r.lo > 0 ? "edge" : r.hi < 0 ? "loses" : "unproven") },
-      ], rows)
-    : empty("No research published yet: run `edgebook research --publish`."));
-}
-
+// ---------------------------------------------------------------- pages
 async function live(root) {
-  const [snap, research] = await Promise.all([load("snapshot", true), load("research")]);
-  const sigs = snap?.data?.signals ?? {};
-  const gate = liveGate(research);
-  const rows = decisionRows(snap);
-  root.append(el("div", { class: "status-strip" },
-    el("span", { class: "pill good" }, `snapshot ${fmt.ago(snap?.received_at)}`),
-    el("span", { class: `pill ${gate.approved.length ? "warn" : "bad"}` }, gate.approved.length ? "paper review" : "execution blocked"),
-    el("span", { class: "muted" }, "Each edge includes the Kalshi taker fee. A displayed signal is a quote comparison, not an order."),
+  const [lv, paper] = await Promise.all([load("live"), load("paper")]);
+  const d = lv?.data;
+  if (!d) return root.append(empty("No live data yet. The engine on Fly publishes every 2 seconds once it starts."));
+  const ageNow = Date.now() - d.updated_ms;
+  const stale = ageNow > 15_000;
+  if (stale) root.append(el("div", { class: "banner" }, `Live feed is ${fmt.age(ageNow)} old. The engine may be restarting; calls below are NOT current.`));
+  root.append(el("div", { class: "cards" },
+    card("BTC index (settlement price)", fmt.usd(d.index), `updated ${fmt.age(d.index_age_ms)} before publish`, TIP.index),
+    card("Exchanges (Coinbase/Kraken/Bitstamp)", fmt.usd(d.exchanges_mid), d.index && d.exchanges_mid ? `${((d.exchanges_mid / d.index - 1) * 1e4).toFixed(1)} bps vs index` : "not connected", "Median best bid/offer across exchanges. If it runs well ahead of the index, the engine waits instead of buying on stale prices."),
+    card("Data age", fmt.age(ageNow), `Kalshi ${fmt.age(d.ws_age_ms)} · index ${fmt.age(d.index_age_ms)}`, "How old these numbers are as you look at them. Calls are blocked automatically if the index is over 3 s old.", stale ? "bad" : "good"),
+    card("Rule for buying", `≥ ${fmt.cents(d.config.min_edge)} edge`, `spread ≤ ${fmt.price(d.config.max_spread)}, ≥ ${Math.round(d.config.min_secs_left)}s left`, "The engine only says BUY when the expected profit after fees is at least this much per contract and all data checks pass."),
   ));
-  root.append(rows.length ? table([
-    { label: "Priority", get: (_, i) => `#${i + 1}` },
-    { label: "Market", get: (r) => r.ticker },
-    { label: "Action", get: (r) => `Buy ${r.side}` },
-    { label: "Entry", get: (r) => r.entry, fmt: fmt.usd },
-    { label: "Model P(side)", get: (r) => r.sideFair, fmt: fmt.p },
-    { label: "Net edge", get: (r) => r.edge, fmt: fmt.c, tone: true },
-    { label: "Close", get: (r) => `${r.minutes.toFixed(1)}m` },
-  ], rows.slice(0, 8)) : empty("No live candidate is currently priceable."));
-  root.append(el("h2", {}, "Market depth by series"));
-  for (const [series, list] of Object.entries(sigs)) {
-    root.append(el("h2", {}, series === "KXBTC15M" ? "15-minute up/down (KXBTC15M)" : `${series}: next close, nearest strikes`));
-    root.append(list.length
-      ? table([
-          { label: "Market", get: (r) => r.ticker },
-          { label: "Strike", get: (r) => r.floor ?? r.cap, fmt: (v) => fmt.usd(v) },
-          { label: "Min left", get: (r) => (r.seconds_left / 60).toFixed(1) },
-          { label: "Fair", get: (r) => r.fair, fmt: fmt.p },
-          { label: "Bid", get: (r) => r.bid, fmt: fmt.p },
-          { label: "Ask", get: (r) => r.ask, fmt: fmt.p },
-          { label: "Edge YES", get: (r) => r.edge_yes, fmt: fmt.c, tone: true },
-          { label: "Edge NO", get: (r) => r.edge_no, fmt: fmt.c, tone: true },
-        ], list)
-      : empty("No open market right now."));
+
+  const held = new Map((paper?.data?.holdings ?? []).map((h) => [h.ticker, h]));
+  const grid = el("div", { class: "calls" });
+  for (const c of d.calls) {
+    const [q, sub] = questionFor(c);
+    const h = held.get(c.ticker);
+    const gates = Object.entries(c.gates ?? {});
+    grid.append(el("div", { class: "call" },
+      el("div", { class: "call-head" }, el("div", {}, el("div", { class: "call-q" }, q), el("div", { class: "call-sub" }, sub)), el("div", { class: "call-sub", title: TIP.left }, fmt.left(c.seconds_left))),
+      badgeFor(c.action),
+      el("div", { class: "reason" }, c.reason),
+      kv([
+        ["Model chance UP", fmt.pct(c.fair_up), TIP.fair],
+        ["Buy UP costs", fmt.price(c.up_price), TIP.upPrice],
+        ["Buy DOWN costs", fmt.price(c.down_price), TIP.downPrice],
+        ["Edge UP", fmt.cents(c.edge_up), TIP.edge, c.edge_up > 0 ? "pos" : "neg"],
+        ["Edge DOWN", fmt.cents(c.edge_down), TIP.edge, c.edge_down > 0 ? "pos" : "neg"],
+        ["Index vs strike", c.index && c.strike ? `${fmt.usd(c.index - c.strike, 0)}` : "–", `${TIP.index} Positive = above the strike.`],
+        ["Spread / depth", `${fmt.price(c.spread)} / ${fmt.n(c.depth_up)}`, `${TIP.spread} ${TIP.depth}`],
+        ["Volatility", c.sigma_per_min_bps ? `${c.sigma_per_min_bps.toFixed(1)} bp/min` : "warming up", TIP.vol],
+      ]),
+      h ? el("div", { class: "position", title: "The simulated $500k account's position in this market." }, `Paper: ${fmt.n(h.contracts)} ${h.side} @ ${fmt.price(h.avg_cost)} avg · worth ${fmt.usd(h.mark == null ? null : h.mark * h.contracts, 0)} now (${h.unrealized == null ? "–" : fmt.usd(h.unrealized, 0)})`) : null,
+      el("div", { class: "gates" }, gates.map(([name, ok]) => el("span", { class: `gate ${ok ? "ok" : "no"}`, title: ok ? `Check passed: ${name}` : `Blocking new entries: ${name}` }, `${ok ? "✓" : "✗"} ${name}`))),
+    ));
   }
-  if (!Object.keys(sigs).length) root.append(empty("No snapshot yet."));
+  root.append(el("h2", {}, "Markets"), d.calls.length ? grid : empty("No open BTC markets right now."));
+
+  const series = d.index_series ?? [];
+  if (series.length > 5) {
+    const chart = el("div", { class: "panel chart" });
+    root.append(el("h2", { title: TIP.index }, "Settlement index, last 15 minutes"), chart);
+    const k = d.calls.find((c) => c.series === "KXBTC15M")?.strike;
+    const traces = [{ x: series.map((p) => new Date(p[0])), y: series.map((p) => p[1]), type: "scatter", mode: "lines", name: "BRTI", line: { color: css("--accent"), width: 2 }, hovertemplate: "$%{y:,.2f}<extra>BRTI</extra>" }];
+    if (k) traces.push({ x: [new Date(series[0][0]), new Date(series.at(-1)[0])], y: [k, k], mode: "lines", name: "15-min strike", line: { dash: "dot", color: css("--warn") }, hovertemplate: "strike $%{y:,.2f}<extra></extra>" });
+    plot(chart, traces, { yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" } });
+  }
 }
 
 async function paper(root) {
-  const execution = await load("execution", true);
-  // A state-only payload keeps this page compatible with deployments before
-  // the history feed; new deployments provide {state, history}.
-  const state = execution?.data?.state ?? execution?.data;
-  const history = executionHistory(execution?.data?.history ?? [], state);
-  const current = state?.config ?? {};
-  const budget = el("input", { type: "number", min: "1", step: "0.01", value: current.paper_starting_cash ?? "5" });
-  const perOrder = el("input", { type: "number", min: "0.01", step: "0.01", value: current.max_order_debit ?? "1" });
-  const maxOpen = el("input", { type: "number", min: "0.01", step: "0.01", value: current.max_open_debit ?? "5" });
-  const minEdge = el("input", { type: "number", min: "0", step: "0.001", value: current.min_edge ?? "0.02" });
-  const notice = el("div", { class: "muted control-notice" }, "Paper controls are protected by the dashboard passcode.");
-  const send = async (action) => {
-    notice.textContent = `${action === "start" ? "Starting" : "Stopping"} paper session…`;
-    try {
-      const response = await fetch("/api/control", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          config: action === "start" ? {
-            mode: "paper",
-            paper_starting_cash: budget.value,
-            max_order_debit: perOrder.value,
-            max_open_debit: maxOpen.value,
-            min_edge: minEdge.value,
-            max_open_positions: 1,
-          } : undefined,
-        }),
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "request failed");
-      notice.textContent = "Command accepted. The recorder applies it on its next minute cycle.";
-      delete cache.execution;
-      setTimeout(render, 1500);
-    } catch (error) {
-      notice.textContent = `Control failed: ${error.message}`;
-    }
-  };
-  const start = el("button", { type: "button", class: "primary" }, "Start paper trading");
-  start.addEventListener("click", () => send("start"));
-  const stop = el("button", { type: "button", class: "danger" }, "Stop");
-  stop.addEventListener("click", () => send("stop"));
-  root.append(el("section", { class: "panel controls" },
-    el("div", { class: "control-heading" }, el("div", { class: "eyebrow" }, "PAPER EXECUTION"), el("strong", {}, "Real quotes · simulated fills")),
-    el("div", { class: "control-grid" },
-      el("label", {}, "Starting balance ($)", budget),
-      el("label", {}, "Per order cap ($)", perOrder),
-      el("label", {}, "Open debit cap ($)", maxOpen),
-      el("label", {}, "Minimum net edge ($)", minEdge),
-      el("div", { class: "control-actions" }, start, stop),
-    ),
-    notice,
-  ));
-  if (!state) {
-    return root.append(empty("No paper session has been published yet. Start one on the recorder, then this page will show its real quote fills and settlements."));
-  }
-  const config = state.config ?? {};
-  const settled = state.settled ?? [];
-  const open = state.positions ?? [];
-  const reserved = open.reduce((total, position) => total + Number(position.debit ?? 0), 0);
-  const equity = Number(state.paper_cash ?? 0) + reserved;
-  root.append(el("div", { class: "status-strip" },
-    el("span", { class: `pill ${state.status === "running" ? "good" : "warn"}` }, state.status),
-    el("span", { class: "pill warn" }, "paper money"),
-    el("span", { class: "muted" }, `updated ${fmt.ago(execution.received_at)} · quote fills include Kalshi taker fees`),
-  ));
+  const p = (await load("paper"))?.data;
+  if (!p) return root.append(empty("The paper account hasn't published yet."));
+  root.append(el("div", { class: "banner" }, "Simulated account: it follows the Live Calls automatically against real Kalshi order books and fees. No real money is involved."));
+  const ret = p.return_pct;
   root.append(el("div", { class: "cards" },
-    card("Paper equity", fmt.usd(equity), `starting ${fmt.usd(config.paper_starting_cash)}`),
-    card("Available cash", fmt.usd(state.paper_cash), `${fmt.usd(reserved)} open debit`),
-    card("Realized P&L", fmt.usd(state.paper_realized_pnl), `${fmt.usd(state.paper_fees)} fees paid`, Number(state.paper_realized_pnl) >= 0 ? "good" : "bad"),
-    card("Max drawdown", fmt.usd(state.paper_max_drawdown), `limit ${fmt.usd(config.max_open_debit)} open debit`, Number(state.paper_max_drawdown) > 0 ? "bad" : "good"),
-    card("Trade threshold", fmt.c(config.min_edge), `max ${fmt.usd(config.max_order_debit)} per order`),
+    card("Equity", fmt.usd(p.equity, 0), `started at ${fmt.usd(p.starting_cash, 0)}`, "Cash plus open positions valued at what selling them would pay right now (best bid minus fee).", ret >= 0 ? "good" : "bad"),
+    card("Return", `${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%`, `since ${new Date(p.started_ms).toLocaleDateString()}`, "Equity versus the $500,000 starting balance."),
+    card("Realized P&L", fmt.usd(p.realized, 0), `${fmt.n(p.closed_trades)} closed trades`, "Profit or loss locked in by selling or by markets settling."),
+    card("Unrealized P&L", fmt.usd(p.unrealized, 0), `${p.holdings.length} open positions`, "Paper profit/loss on positions still open, at current sell prices."),
+    card("Win rate", p.win_rate == null ? "–" : fmt.pct(p.win_rate), "closed trades in profit", "Share of closed trades that made money. Not the goal by itself: a strategy can win often and still lose money."),
+    card("Status", p.halted ? "PAUSED" : "Trading", p.halted ? "daily loss limit hit" : `risk ${(p.risk.max_risk_per_trade * 100).toFixed(0)}%/trade, ≤ ${fmt.usd(p.risk.max_per_market, 0)}/market`, "Entries pause for the rest of the UTC day if the account drops 5% from its start-of-day value.", p.halted ? "bad" : "good"),
   ));
-  root.append(el("h2", {}, "Paper equity · actual session events"));
-  const equityPanel = el("div", { class: "panel chart chart-equity" });
-  root.append(equityPanel);
-  equityChart(equityPanel, history);
-  root.append(el("p", { class: "muted" }, "Equity equals available paper cash plus debit reserved for open positions. It is not marked to market until Kalshi settles the contract."));
-  root.append(el("h2", {}, "Decision timeline"));
-  const meaningful = history.filter((item) => ["session_started", "paper_filled", "paper_settled", "decision_skipped", "session_stopped"].includes(item.event));
-  root.append(meaningful.length ? table([
-    { label: "Time", get: (r) => new Date(r.at).toLocaleString() },
-    { label: "Event", get: (r) => r.event.replaceAll("_", " ") },
-    { label: "Equity", get: (r) => r.state?.equity, fmt: fmt.usd },
-    { label: "Cash", get: (r) => r.state?.cash, fmt: fmt.usd },
-    { label: "Open", get: (r) => r.state?.open_positions, fmt: fmt.n },
-    { label: "Reason", get: (r) => r.detail?.reason ?? r.detail?.ticker ?? "–" },
-  ], meaningful.slice().reverse().slice(0, 30)) : empty("No decision events have been published yet."));
-  root.append(el("h2", {}, "Open paper positions"));
-  root.append(open.length ? table([
-    { label: "Market", get: (r) => r.ticker },
-    { label: "Side", get: (r) => r.side },
-    { label: "Entry", get: (r) => r.entry_cost, fmt: fmt.usd },
-    { label: "Fee", get: (r) => r.fee, fmt: fmt.usd },
-    { label: "Debit", get: (r) => r.debit, fmt: fmt.usd },
-    { label: "Model edge", get: (r) => r.edge, fmt: fmt.c, tone: true },
-    { label: "Opened", get: (r) => new Date(r.opened_at).toLocaleString() },
-  ], open) : empty("No open paper positions."));
-  root.append(el("h2", {}, "Settled paper trades"));
-  root.append(settled.length ? table([
-    { label: "Market", get: (r) => r.ticker },
-    { label: "Side", get: (r) => r.side },
-    { label: "Result", get: (r) => r.result.toUpperCase() },
-    { label: "Debit", get: (r) => r.debit, fmt: fmt.usd },
-    { label: "Payout", get: (r) => r.payout, fmt: fmt.usd },
-    { label: "P&L", get: (r) => r.pnl, fmt: fmt.usd, tone: true },
-    { label: "Settled", get: (r) => new Date(r.settled_at).toLocaleString() },
-  ], settled.slice().reverse()) : empty("No paper positions have settled."));
+  const eq = p.equity_series ?? [];
+  if (eq.length > 1) {
+    const chart = el("div", { class: "panel chart" });
+    root.append(el("h2", { title: "Account value over time, sampled every 10 seconds." }, "Equity"), chart);
+    plot(chart, [{ x: eq.map((x) => new Date(x[0])), y: eq.map((x) => x[1]), type: "scatter", mode: "lines", name: "equity", line: { color: css("--accent-2"), width: 2 }, hovertemplate: "$%{y:,.0f}<extra></extra>" }], { yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" } });
+  }
+  root.append(el("h2", {}, "Open positions"));
+  root.append(p.holdings.length ? table([
+    { label: "Market", get: (h) => h.ticker },
+    { label: "Side", get: (h) => h.side, tip: "UP = YES, DOWN = NO" },
+    { label: "Contracts", get: (h) => h.contracts, fmt: fmt.n },
+    { label: "Avg cost", get: (h) => h.avg_cost, fmt: fmt.price, tip: "Average price paid per contract including fees" },
+    { label: "Sell value now", get: (h) => h.mark, fmt: fmt.price, tip: "Best bid minus fee: what selling one contract pays now" },
+    { label: "Unrealized", get: (h) => h.unrealized, fmt: (v) => fmt.usd(v, 0), tone: true },
+    { label: "Status", get: (h) => (h.awaiting_result ? "closed: waiting for Kalshi result" : "live") },
+  ], p.holdings) : empty("No open positions."));
+  root.append(el("h2", {}, "Trade log (newest first)"));
+  const fills = (p.fills ?? []).slice().reverse();
+  root.append(fills.length ? table([
+    { label: "Time", get: (f) => fmt.time(f.ts_ms) },
+    { label: "Action", get: (f) => f.action },
+    { label: "Market", get: (f) => f.ticker },
+    { label: "Side", get: (f) => (f.side === "yes" ? "UP" : "DOWN") },
+    { label: "Contracts", get: (f) => f.contracts, fmt: fmt.n },
+    { label: "Price", get: (f) => f.price, fmt: fmt.price, tip: "Average fill price per contract, before fees (settlement = $1 or $0)" },
+    { label: "Fees", get: (f) => f.fees, fmt: (v) => fmt.usd(v, 0) },
+    { label: "P&L", get: (f) => f.pnl, fmt: (v) => (v == null ? "–" : fmt.usd(v, 0)), tone: true },
+    { label: "Why", get: (f) => f.reason },
+  ], fills) : empty("No trades yet. The engine only buys when a market is mispriced by at least the minimum edge; on most minutes it correctly waits."));
 }
 
-async function lab(root) {
-  const research = await load("research");
-  const series = research?.data?.series ?? {};
-  if (!Object.keys(series).length) return root.append(empty("No research published yet: run `edgebook research --days 30 --publish`."));
-  root.append(el("p", { class: "muted" }, `Walk-forward: each day is predicted by a model fit only on earlier days. The last ${research.data.holdout_days} days are a separate holdout. Generated ${fmt.ago(research.data.generated)} on ${research.data.days} days of history.`));
-  const gate = liveGate(research);
-  const bestGate = gate.candidates.sort((a, b) => (b.lo ?? -Infinity) - (a.lo ?? -Infinity))[0];
-  root.append(el("div", { class: "cards" },
-    card("Execution status", gate.approved.length ? "PAPER REVIEW" : "BLOCKED", "requires ≥500 holdout trades, positive 95% CI, and Brier no worse than market", gate.approved.length ? "warn" : "bad"),
-    card("Best holdout CI low", bestGate ? fmt.c(bestGate.lo) : "–", bestGate ? `${bestGate.series} / ${bestGate.name}, n=${fmt.n(bestGate.n)}` : "no evaluated candidate", bestGate?.lo > 0 ? "good" : "bad"),
-  ));
-  for (const [name, r] of Object.entries(series)) {
-    root.append(el("h2", {}, `${name}: ${fmt.n(r.rows)} decision points`));
-    const rows = r.strategies.flatMap((st) => ["all_oos", "holdout"].map((period) => ({ st, period, pr: st[period] })));
-    root.append(table([
-      { label: "Strategy", get: (x) => x.st.name },
-      { label: "Period", get: (x) => (x.period === "all_oos" ? "all OOS" : "holdout") },
-      { label: "Brier", get: (x) => x.pr.brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)) },
-      { label: "Market Brier", get: (x) => x.pr.market_brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)) },
-      ...["0.0", "0.02", "0.05"].map((th) => ({ label: `Taker >${th}`, get: (x) => x.pr.taker[th]?.mean, fmt: (v) => fmt.c(v), tone: true })),
-      { label: "Trades >0.02", get: (x) => x.pr.taker["0.02"]?.n, fmt: fmt.n },
-    ], rows));
-    const eq = el("div", { class: "panel chart" });
-    root.append(eq);
-    plot(eq, r.strategies.filter((st) => st.equity?.length).map((st) => ({
-      x: st.equity.map((p) => new Date(p[0] * 1000)), y: st.equity.map((p) => p[1]), type: "scatter", mode: "lines", name: st.name,
-    })), { title: { text: "Out-of-sample equity, $ per 1-contract taker trade (edge > 2¢)", font: { size: 13 } }, yaxis: { gridcolor: css("--border"), tickprefix: "$" } });
-    if (r.price_bias?.length) {
-      root.append(el("h3", {}, "Price-level bias: always buy YES or NO by price bucket"));
-      root.append(table([
-        { label: "Mid bucket", get: (b) => `${b.lo.toFixed(2)}–${b.hi.toFixed(2)}` },
-        { label: "n", get: (b) => b.n, fmt: fmt.n },
-        { label: "Buy YES", get: (b) => b.yes.mean, fmt: fmt.c, tone: true },
-        { label: "Buy NO", get: (b) => b.no.mean, fmt: fmt.c, tone: true },
-      ], r.price_bias));
-    }
-  }
+async function research(root) {
+  const r = (await load("research"))?.data;
+  root.append(el("div", { class: "banner" }, "Bottom line from 30 days of past markets: no strategy tested so far makes money after fees. Kalshi's own prices are usually as accurate as our model. Treat every call as unproven until the paper account shows profit over hundreds of trades."));
+  const series = r?.series ?? {};
+  if (!Object.keys(series).length) return root.append(empty("No research report published yet."));
+  const rows = [];
+  for (const [s, v] of Object.entries(series)) for (const st of v.strategies) rows.push({ s, name: st.name, all: st.all_oos, hold: st.holdout });
+  root.append(table([
+    { label: "Market", get: (x) => (x.s === "KXBTC15M" ? "15-minute" : "Hourly") },
+    { label: "Strategy", get: (x) => x.name, tip: "market = Kalshi's own price; model_t4 = our fair value; blend/logreg/gbm = learned combinations" },
+    { label: "Accuracy (Brier)", get: (x) => x.hold.brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)), tip: "Average squared error of the probabilities on the last 7 days. Lower is better." },
+    { label: "Kalshi's accuracy", get: (x) => x.hold.market_brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)), tip: "The same score for Kalshi's own prices. To have an edge you must beat this." },
+    { label: "Trades", get: (x) => x.hold.taker["0.02"]?.n, fmt: fmt.n, tip: "Trades taken on the last 7 days when expected edge > 2¢" },
+    { label: "Avg profit / contract", get: (x) => x.hold.taker["0.02"]?.mean, fmt: fmt.cents, tone: true, tip: "Average result per contract after fees on those trades" },
+    { label: "Verdict", get: (x) => { const t = x.hold.taker["0.02"]; if (!t || !t.n) return "no trades"; return t.ci_lo > 0 ? "profitable" : t.ci_hi < 0 ? "loses money" : "unproven (could be luck)"; }, tip: "Based on the 95% confidence interval of the average profit" },
+  ], rows));
 }
 
 async function calibration(root) {
-  const cal = await load("calibration");
-  const hs = cal?.data?.horizons ?? [];
-  if (!hs.length) return root.append(empty("No calibration published yet: run `edgebook calibrate --publish`."));
-  const d = cal.data;
-  root.append(el("div", { class: "cards" },
-    card("Rows scored", fmt.n(d.n_scored), `of ${fmt.n(d.n_rows_in)}`),
-    card("Coinbase vs settlement", `${d.basis_bps.median?.toFixed(1)} bps`, `p90 ${d.basis_bps.p90?.toFixed(1)} bps`),
-    card("Published", fmt.ago(cal.received_at)),
-  ));
-  root.append(table([
-    { label: "Minutes before close", get: (h) => h.horizon_min },
-    { label: "n", get: (h) => h.n, fmt: fmt.n },
-    { label: "Market Brier", get: (h) => h.market_brier.toFixed(4) },
-    ...Object.keys(hs[0].models).map((m) => ({ label: `${m} Brier`, get: (h) => h.models[m].brier.toFixed(4) })),
-  ], hs));
-  const pick = el("select", {}, hs.flatMap((h) => Object.keys(h.models).map((m) => el("option", { value: `${h.horizon_min}|${m}` }, `${h.horizon_min} min: ${m}`))));
+  const cal = (await load("calibration"))?.data;
+  const hs = cal?.horizons ?? [];
+  if (!hs.length) return root.append(empty("No calibration report published yet."));
+  root.append(el("p", { class: "muted" }, "If the model says 70%, UP should win about 70% of the time. Points on the dotted line = honest probabilities. This is checked on past settled markets."));
+  const pick = el("select", { title: "Which forecast horizon and model to plot" }, hs.flatMap((h) => Object.keys(h.models).map((m) => el("option", { value: `${h.horizon_min}|${m}` }, `${h.horizon_min} min before close · ${m}`))));
   const chart = el("div", { class: "panel chart" });
-  root.append(el("h2", {}, "Reliability: predicted vs realized"), pick, chart);
+  root.append(pick, chart);
   const draw = () => {
     const [hm, m] = pick.value.split("|");
-    const b = hs.find((h) => String(h.horizon_min) === hm).models[m].buckets.filter((x) => x.n);
+    const b = hs.find((h) => String(h.horizon_min) === hm).models[m].buckets.filter((x) => x.n && x.mean_p != null && x.freq != null);
+    if (!b.length) return;
     plot(chart, [
-      { x: [0, 1], y: [0, 1], mode: "lines", line: { dash: "dot", color: css("--muted") }, name: "perfect" },
-      { x: b.map((x) => x.mean_p), y: b.map((x) => x.freq), mode: "markers+lines", name: m, error_y: { type: "data", symmetric: false, array: b.map((x) => x.ci_hi - x.freq), arrayminus: b.map((x) => x.freq - x.ci_lo) }, text: b.map((x) => `n=${x.n}`) },
-    ], { xaxis: { title: "predicted P(YES)", range: [0, 1], gridcolor: css("--border") }, yaxis: { title: "realized frequency", range: [0, 1], gridcolor: css("--border") } });
+      { x: [0, 1], y: [0, 1], mode: "lines", line: { dash: "dot", color: css("--muted") }, name: "perfectly honest", hoverinfo: "skip" },
+      { x: b.map((x) => x.mean_p), y: b.map((x) => x.freq), mode: "markers+lines", name: m, error_y: { type: "data", symmetric: false, array: b.map((x) => x.ci_hi - x.freq), arrayminus: b.map((x) => x.freq - x.ci_lo) }, customdata: b.map((x) => x.n), hovertemplate: "said %{x:.0%} → happened %{y:.0%} (n=%{customdata})<extra></extra>" },
+    ], { hovermode: "closest", xaxis: { title: "model said P(UP)", range: [0, 1], gridcolor: css("--border"), tickformat: ".0%" }, yaxis: { title: "actually happened", range: [0, 1], gridcolor: css("--border"), tickformat: ".0%" } });
   };
   pick.addEventListener("change", draw);
   draw();
 }
 
-async function trades(root) {
-  const t = await load("trades", true);
-  const list = t?.data ?? [];
-  const book = ledger(t);
+async function system(root) {
+  const [lv, snap] = await Promise.all([load("live"), load("snapshot")]);
+  const d = lv?.data;
+  const rec = snap?.data?.recorder ?? {};
   root.append(el("div", { class: "cards" },
-    card("Session cap", fmt.usd(book.cap), "all submitted order debits"),
-    card("Reserved", fmt.usd(book.reserved), `${fmt.usd(book.remaining)} remaining`, book.remaining > 0 ? "good" : "bad"),
-    card("Orders", fmt.n(list.length), "IOC fills and cancellations are logged"),
+    card("Live engine", d ? fmt.age(Date.now() - d.updated_ms) : "offline", "since last publish", "The engine re-decides every second and publishes every 2 seconds.", d && Date.now() - d.updated_ms < 15_000 ? "good" : "bad"),
+    card("Settlement index age", fmt.age(d?.index_age_ms), "BRTI via Kalshi", TIP.index, d?.index_age_ms <= 3000 ? "good" : "bad"),
+    card("Kalshi stream age", fmt.age(d?.ws_age_ms), "order books + trades", "Time since the last message on Kalshi's live connection.", d?.ws_age_ms <= 10_000 ? "good" : "bad"),
+    card("Recorder", rec.msgs_per_s != null ? `${Math.round(rec.msgs_per_s)} msg/s` : "–", `${fmt.n(rec.markets)} markets · ${fmt.n(rec.gaps)} gaps`, "Raw data saved for research. Gaps = missed messages (should be 0)."),
+    card("Disk", rec.disk_total_gb ? `${((rec.disk_used_gb / rec.disk_total_gb) * 100).toFixed(0)}%` : "–", rec.disk_total_gb ? `${rec.disk_used_gb.toFixed(1)} of ${rec.disk_total_gb.toFixed(0)} GB` : "", "Recorder volume on Fly."),
   ));
-  if (!list.length) return root.append(empty("No orders yet. The budget is ready, but execution remains blocked until the statistical gate passes."));
-  root.append(table([
-    { label: "Time", get: (r) => new Date(r.ts).toLocaleString() },
-    { label: "Env", get: (r) => r.env },
-    { label: "Market", get: (r) => r.order.ticker },
-    { label: "Side", get: (r) => (r.order.side === "bid" ? "YES" : "NO") },
-    { label: "Price", get: (r) => (r.order.side === "bid" ? r.order.price : (1 - r.order.price).toFixed(4)) },
-    { label: "Reserved", get: (r) => r.reserved_dollars, fmt: fmt.usd },
-    { label: "Filled", get: (r) => r.response.fill_count },
-    { label: "Fee", get: (r) => r.response.average_fee_paid },
-    { label: "Model edge", get: (r) => Math.max(r.signal.edge_yes, r.signal.edge_no), fmt: fmt.c, tone: true },
-    { label: "Result", get: (r) => r.result ?? "pending" },
-  ], list.slice().reverse()));
+  const ex = Object.entries(d?.exchanges ?? {});
+  root.append(el("h2", {}, "Exchange feeds"));
+  root.append(ex.length ? table([
+    { label: "Exchange", get: (x) => x[0] },
+    { label: "Active", get: (x) => (x[1].active ? "yes" : "no") },
+    { label: "Quote age", get: (x) => x[1].staleness_ms, fmt: fmt.age, tip: "How old that exchange's best bid/offer is" },
+    { label: "Latency", get: (x) => x[1].latency_ms, fmt: (v) => (v == null ? "–" : `${v} ms`), tip: "Exchange timestamp to our receive time" },
+  ], ex) : empty("Exchange feeds not connected yet."));
 }
 
-async function health(root) {
-  const snap = await load("snapshot", true);
-  const rec = snap?.data?.recorder;
-  if (!rec) return root.append(empty("No recorder snapshot yet."));
-  const disk = rec.disk_total_gb ? rec.disk_used_gb / rec.disk_total_gb : null;
-  root.append(el("div", { class: "cards" },
-    card("Snapshot age", fmt.ago(snap.received_at), "published every 60s", Date.now() - Date.parse(snap.received_at) > 180_000 ? "bad" : "good"),
-    card("Messages / s", rec.msgs_per_s != null ? Math.round(rec.msgs_per_s) : "–", `${fmt.n(rec.messages)} since start`),
-    card("Sequence gaps", fmt.n(rec.gaps), `${fmt.n(rec.reconnects)} reconnects`, rec.gaps ? "bad" : "good"),
-    card("Disk", disk == null ? "–" : `${(disk * 100).toFixed(0)}%`, `${rec.disk_used_gb?.toFixed(1)} / ${rec.disk_total_gb?.toFixed(0)} GB`, disk > 0.8 ? "bad" : "good"),
-    card("Uptime", rec.uptime_s ? `${(rec.uptime_s / 3600).toFixed(1)} h` : "–"),
-  ));
-  root.append(el("h2", {}, "Rows written by stream"));
-  root.append(table([{ label: "Stream", get: (r) => r[0] }, { label: "Rows", get: (r) => r[1], fmt: fmt.n }], Object.entries(rec.rows_written ?? {})));
-}
-
-const RENDER = { overview, live, paper, lab, calibration, trades, health };
+const RENDER = { live, paper, research, calibration, system };
 
 async function render() {
   const root = document.getElementById("content");
   document.getElementById("page-title").textContent = PAGES[page];
-  root.replaceChildren(el("div", { class: "empty" }, "Loading…"));
   const frag = el("div");
-  await RENDER[page](frag);
+  try {
+    await RENDER[page](frag);
+  } catch (e) {
+    frag.replaceChildren(empty(`This page hit an error: ${e.message}`));
+  }
   root.replaceChildren(...frag.childNodes);
-  const snap = cache.snapshot?.v;
-  document.getElementById("updated").textContent = snap ? `data ${fmt.ago(snap.received_at)}` : "";
+  document.getElementById("updated").textContent = `updated ${fmt.time(Date.now())}`;
+  clearTimeout(timer);
+  if (REFRESH_MS[page]) timer = setTimeout(render, REFRESH_MS[page]);
+  sideStatus();
+}
+
+async function sideStatus() {
+  const lv = await load("live");
+  const age = lv?.data ? Date.now() - lv.data.updated_ms : null;
   document.getElementById("side-status").replaceChildren(
-    ...["snapshot", "research", "calibration", "trades", "execution"].map((k) =>
-      el("div", {}, el("span", { class: `pill ${cache[k]?.v ? "good" : "warn"}` }, k), " ", cache[k]?.v ? fmt.ago(cache[k].v.received_at) : "none")),
+    el("div", { title: "Age of the live engine's latest publish" }, el("span", { class: `pill ${age != null && age < 15_000 ? "good" : "bad"}` }, "engine"), " ", fmt.age(age)),
+    el("div", { title: TIP.index }, el("span", { class: `pill ${lv?.data?.index_age_ms <= 3000 ? "good" : "bad"}` }, "index"), " ", fmt.age(lv?.data?.index_age_ms)),
   );
-  clearInterval(timer);
-  if (page === "live" || page === "overview" || page === "health") timer = setInterval(() => { for (const k in cache) delete cache[k]; render(); }, 60_000);
 }
 
 document.getElementById("nav").addEventListener("click", (e) => {
@@ -615,5 +298,5 @@ document.getElementById("nav").addEventListener("click", (e) => {
   for (const x of document.querySelectorAll("#nav a")) x.classList.toggle("active", x === a);
   render();
 });
-document.getElementById("refresh").addEventListener("click", () => { for (const k in cache) delete cache[k]; render(); });
-Promise.all(["snapshot", "research", "calibration", "trades", "execution"].map((k) => load(k))).then(render);
+document.getElementById("refresh").addEventListener("click", render);
+render();
