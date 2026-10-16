@@ -30,11 +30,11 @@ INDEX = pa.decimal128(20, 8)
 STRIKE = pa.decimal128(18, 2)
 
 
-def _schema(*cols: tuple[str, pa.DataType]) -> pa.Schema:
+def make_schema(*cols: tuple[str, pa.DataType]) -> pa.Schema:
     return pa.schema([pa.field(name, dtype) for name, dtype in cols])
 
 
-BOOK = _schema(
+BOOK = make_schema(
     ("recv_ts_ms", pa.int64()),
     ("sending_ts_ms", pa.int64()),
     ("sid", pa.int64()),
@@ -45,7 +45,7 @@ BOOK = _schema(
     ("price", PRICE),
     ("qty", QTY),
 )
-TRADES = _schema(
+TRADES = make_schema(
     ("recv_ts_ms", pa.int64()),
     ("ts_ms", pa.int64()),
     ("trade_id", pa.string()),
@@ -54,7 +54,7 @@ TRADES = _schema(
     ("count", QTY),
     ("taker_side", pa.string()),
 )
-INDEX_VALUES = _schema(
+INDEX_VALUES = make_schema(
     ("recv_ts_ms", pa.int64()),
     ("received_at_ms", pa.int64()),
     ("index_id", pa.string()),
@@ -63,7 +63,7 @@ INDEX_VALUES = _schema(
     ("window_end_ms", pa.int64()),
     ("raw", pa.string()),
 )
-MARKETS = _schema(
+MARKETS = make_schema(
     ("seen_ts_ms", pa.int64()),
     ("series", pa.string()),
     ("ticker", pa.string()),

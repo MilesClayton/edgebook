@@ -11,7 +11,16 @@ from typing import Any
 import pytest
 import yaml
 
-from edgebook.venues.kalshi.models import WS_MESSAGE, Balance, MarketsPage, RestMarket
+from edgebook.venues.kalshi.models import (
+    WS_MESSAGE,
+    Balance,
+    BatchGetMarketCandlesticksResponse,
+    BidAskDistribution,
+    MarketCandlestick,
+    MarketCandlesticksResponse,
+    MarketsPage,
+    RestMarket,
+)
 
 SPEC_DIR = Path(os.environ.get("KALSHI_SPEC_DIR", Path(__file__).parent / "fixtures" / "kalshi"))
 WS_TYPES = {"orderbook_snapshot", "orderbook_delta", "trade", "cfbenchmarks_value"}
@@ -51,7 +60,15 @@ def _schema_fields(schema: str) -> tuple[set[str], set[str]]:
 
 @pytest.mark.parametrize(
     ("model", "schema"),
-    [(RestMarket, "Market"), (MarketsPage, "GetMarketsResponse"), (Balance, "GetBalanceResponse")],
+    [
+        (RestMarket, "Market"),
+        (MarketsPage, "GetMarketsResponse"),
+        (Balance, "GetBalanceResponse"),
+        (BatchGetMarketCandlesticksResponse, "BatchGetMarketCandlesticksResponse"),
+        (MarketCandlesticksResponse, "MarketCandlesticksResponse"),
+        (MarketCandlestick, "MarketCandlestick"),
+        (BidAskDistribution, "BidAskDistribution"),
+    ],
 )
 def test_rest_models_match_openapi(model: type, schema: str) -> None:
     props, required = _schema_fields(schema)
