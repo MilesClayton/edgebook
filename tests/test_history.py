@@ -40,6 +40,18 @@ async def test_coinbase_backfill_is_incremental(tmp_path: Path) -> None:
     assert np.all(np.diff(ts) == 60)
     assert ts[-1] == int((NOW + timedelta(minutes=10)).timestamp())
     assert close.min() >= 80_000
+    # A longer window later fills the older gap; a shorter one never deletes history.
+    older = await coinbase.backfill(
+        tmp_path, days=2, client=client, now=NOW + timedelta(minutes=10)
+    )
+    assert older == 1430  # 2-day window ends 10 min later than the first run
+    assert (
+        await coinbase.backfill(tmp_path, days=1, client=client, now=NOW + timedelta(minutes=10))
+        == 0
+    )
+    ts, _ = coinbase.load(tmp_path)
+    assert ts.size == 2 * 1440
+    assert np.all(np.diff(ts) == 60)
 
 
 def candle(end: int, bid: str, ask: str) -> MarketCandlestick:
