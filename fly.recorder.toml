@@ -27,6 +27,7 @@ kill_timeout = 30
 [[mounts]]
   source = "recorder_data"
   destination = "/data"
+  initial_size = "40gb"  # used if deploy has to create the volume (Fly's default is 1GB)
   processes = ["recorder"]
 
 [[restart]]
