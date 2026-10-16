@@ -5,8 +5,12 @@ description = "Typed quant trading bot for prediction markets (Kalshi BTC first)
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "cryptography>=50.0.2",
+    "httpx>=0.28.1",
+    "pyarrow>=26.0.0",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "websockets>=17.2",
 ]
 
 [dependency-groups]
@@ -14,9 +18,13 @@ dev = [
     "hypothesis>=6.115",
     "mypy>=1.13",
     "pip-audit>=2.7",
+    "pyarrow-stubs>=20.0.0.20260819",
     "pytest>=8.3",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=6.0",
+    "pyyaml>=6.0.3",
     "ruff>=0.8",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [build-system]
@@ -50,6 +58,7 @@ warn_required_dynamic_aliases = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 addopts = "-q --strict-markers --cov=edgebook --cov-report=term-missing --cov-fail-under=85"
 
 [tool.coverage.run]

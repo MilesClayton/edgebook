@@ -1,0 +1,36 @@
+# Market data recorder: streams Kalshi production books, trades and the BRTI
+# settlement index to Parquet on a Fly volume. Never places orders.
+#
+# One-time setup (see README "Deploy"):
+#   fly apps create edgebook-recorder
+#   fly volumes create recorder_data --app edgebook-recorder --region iad --size 10
+#   fly secrets set --app edgebook-recorder EDGEBOOK_KALSHI_KEY_ID=... \
+#     EDGEBOOK_KALSHI_PRIVATE_KEY="$(cat ~/path/to/kalshi-prod.pem)"
+
+app = "edgebook-recorder"
+primary_region = "iad"  # Ashburn, VA: closest Fly region to Kalshi's US-East infrastructure
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  EDGEBOOK_ENV = "paper"  # recorder never trades; market data is always production
+  EDGEBOOK_DATA_DIR = "/data"
+
+[processes]
+  recorder = "python -m edgebook record"
+
+[[mounts]]
+  source = "recorder_data"
+  destination = "/data"
+  processes = ["recorder"]
+
+[[restart]]
+  policy = "always"
+  retries = 10
+  processes = ["recorder"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["recorder"]

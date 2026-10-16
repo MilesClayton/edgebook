@@ -11,7 +11,7 @@ NOW = datetime(2026, 10, 16, 17, tzinfo=UTC)
 
 
 def lvl(price: str, size: int = 10) -> BookLevel:
-    return BookLevel(price=Decimal(price), size=size)
+    return BookLevel(price=Decimal(price), size=Decimal(size))
 
 
 def test_parse_price_accepts_fixed_point_strings() -> None:
@@ -59,10 +59,10 @@ def test_models_are_frozen_and_strict() -> None:
         side=Side.YES,
         action=Action.BUY,
         price=Decimal("0.5"),
-        count=1,
+        count=Decimal(1),
     )
     with pytest.raises(ValidationError):
-        order.count = 2  # type: ignore[misc]
+        order.count = Decimal(2)  # type: ignore[misc]
     with pytest.raises(ValidationError):
         Order(
             client_order_id="c1",
@@ -70,7 +70,7 @@ def test_models_are_frozen_and_strict() -> None:
             side=Side.YES,
             action=Action.BUY,
             price=Decimal("0.5"),
-            count=0,
+            count=Decimal(0),
         )
 
 

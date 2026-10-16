@@ -1,0 +1,26 @@
+name: deploy
+
+# main is protected by the ci-ok check, so anything that lands here already passed CI.
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Dockerfile", "fly.*.toml", "uv.lock", "pyproject.toml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-recorder
+  cancel-in-progress: false
+
+jobs:
+  recorder:
+    runs-on: ubuntu-latest
+    environment: paper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@1.5
+      - run: flyctl deploy --config fly.recorder.toml --remote-only --wait-timeout 300
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
