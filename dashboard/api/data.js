@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     if (r.status === 404) return res.status(404).json({ error: `no ${kind} published yet` });
     if (r.status === 401) return res.status(404).json({ error: `${kind} requires DASHBOARD_TOKEN` });
     if (!r.ok) return res.status(502).json({ error: `store returned ${r.status}` });
-    res.setHeader("Cache-Control", "private, max-age=15");
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", "application/json");
     return res.status(200).send(await r.text());
   } catch (e) {
