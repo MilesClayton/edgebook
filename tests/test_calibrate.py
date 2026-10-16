@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from edgebook.research import calibrate as calib
-from edgebook.research.calibrate import _taker_pnl
+from edgebook.research.calibrate import taker_pnl
 
 HOUR = 3600
 T0 = 1_790_000_000 // 86_400 * 86_400
@@ -77,6 +77,6 @@ def test_skips_are_counted() -> None:
 
 
 def test_taker_rule() -> None:
-    assert _taker_pnl(0.70, 0.48, 0.50, 1, 0.02) == pytest.approx(1 - 0.50 - 0.02)
-    assert _taker_pnl(0.30, 0.50, 0.52, 0, 0.02) == pytest.approx(1 - 0.50 - 0.02)
-    assert _taker_pnl(0.51, 0.49, 0.51, 1, 0.0) is None
+    assert taker_pnl(0.70, 0.48, 0.50, 1, 0.02) == pytest.approx(1 - 0.50 - 0.02)
+    assert taker_pnl(0.30, 0.50, 0.52, 0, 0.02) == pytest.approx(1 - 0.50 - 0.02)
+    assert taker_pnl(0.51, 0.49, 0.51, 1, 0.0) is None

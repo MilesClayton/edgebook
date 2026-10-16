@@ -47,7 +47,14 @@ class Settings(BaseSettings):
     # Research
     history_dir: Path = Path("history")
     reports_dir: Path = Path("reports")
-    calibration_series: tuple[str, ...] = ("KXBTCD",)
+    calibration_series: tuple[str, ...] = ("KXBTCD", "KXBTC15M")
+
+    # Dashboard: the recorder serves a JSON store on Fly that the Vercel page proxies.
+    # dashboard_url is where local commands publish (the Fly app URL); the recorder
+    # itself only needs dashboard_token to start the store.
+    dashboard_url: str | None = None
+    dashboard_token: SecretStr | None = None
+    dashboard_port: int = 8080
 
     def kalshi_pem(self) -> bytes | None:
         if self.kalshi_private_key is not None:

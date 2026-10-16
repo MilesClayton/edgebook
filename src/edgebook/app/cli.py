@@ -13,16 +13,23 @@ import dataclasses
 import json
 import logging
 import sys
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from edgebook.config import KALSHI_URLS, Settings
 from edgebook.history import coinbase
 from edgebook.history import kalshi as kalshi_history
+from edgebook.live.signals import LivePricer, Signal, signals
+from edgebook.live.snapshot import SnapshotBuilder
+from edgebook.publish import clean, publish
+from edgebook.recorder import http as dashboard_http
 from edgebook.recorder.run import Recorder
 from edgebook.recorder.sink import ParquetSink
 from edgebook.research import calibrate as calib
+from edgebook.research import features, strategies
 from edgebook.venues.kalshi.auth import KalshiSigner
+from edgebook.venues.kalshi.models import CreateOrderV2Request
 from edgebook.venues.kalshi.rest import KalshiRest
 from edgebook.venues.kalshi.ws import KALSHI_WS_URLS, KalshiWebSocket
 
@@ -47,6 +54,22 @@ async def record(settings: Settings) -> None:
         series=settings.record_series,
         index_ids=settings.record_indices,
     )
+    if settings.dashboard_token is not None:
+        store = settings.data_dir / "dashboard"
+        await dashboard_http.serve(
+            store, settings.dashboard_token.get_secret_value(), settings.dashboard_port
+        )
+        builder = SnapshotBuilder(
+            rest=recorder.rest,
+            pricer=LivePricer(settings.data_dir / "history"),
+            recorder=recorder,
+            data_dir=settings.data_dir,
+        )
+
+        async def write_snapshot() -> None:
+            dashboard_http.write_kind(store, "snapshot", clean(await builder.build()))
+
+        recorder.on_minute = write_snapshot
     await recorder.run()
 
 
@@ -84,15 +107,26 @@ async def backfill(settings: Settings, days: int) -> None:
         await rest.aclose()
 
 
+# 15-minute markets only exist for 15 minutes, so they get shorter horizons.
+SERIES_HORIZONS = {"KXBTC15M": (14, 10, 5, 2, 1)}
+
+
+def horizons_for(series: str) -> tuple[int, ...]:
+    return SERIES_HORIZONS.get(series, kalshi_history.HORIZONS_MIN)
+
+
 async def calibrate(settings: Settings, days: int) -> None:
     ts, close = coinbase.load(settings.history_dir)
     cutoff = int(datetime.now(UTC).timestamp()) - days * 86_400
-    rows = [
-        r
-        for series in settings.calibration_series
-        for r in kalshi_history.load(settings.history_dir, series)
-        if r["close_ts"] >= cutoff
-    ]
+    rows = []
+    for series in settings.calibration_series:
+        markets = [
+            m
+            for m in kalshi_history.load_markets(settings.history_dir, series)
+            if m["close_ts"] >= cutoff
+        ]
+        candles = kalshi_history.load_candles(settings.history_dir, series)
+        rows += kalshi_history.horizon_rows(markets, candles, horizons_for(series))
     report = calib.run(
         ts,
         close,
@@ -102,19 +136,132 @@ async def calibrate(settings: Settings, days: int) -> None:
     print(calib.render(report))
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     out = settings.reports_dir / f"calibration-{datetime.now(UTC):%Y-%m-%dT%H%M}.json"
-    out.write_text(json.dumps(dataclasses.asdict(report), indent=2, default=str))
+    out.write_text(json.dumps(clean(report), indent=2))
     print(f"\nreport: {out}")
+    if PUBLISH:
+        await publish(settings, "calibration", report)
+
+
+async def research(settings: Settings, days: int) -> None:
+    ts, close = coinbase.load(settings.history_dir)
+    cutoff = int(datetime.now(UTC).timestamp()) - days * 86_400
+    report: dict[str, object] = {}
+    for series in settings.calibration_series:
+        markets = [
+            m
+            for m in kalshi_history.load_markets(settings.history_dir, series)
+            if m["close_ts"] >= cutoff
+        ]
+        candles = kalshi_history.load_candles(settings.history_dir, series)
+        fs = features.build(markets, candles, ts, close, horizons_for(series))
+        results = strategies.run(fs)
+        bias = strategies.price_bias(fs)
+        print(strategies.render(series, fs, results))
+        print(strategies.render_bias(bias))
+        print()
+        report[series] = {
+            "rows": int(fs.y.size),
+            "skipped": fs.skipped,
+            "strategies": results,
+            "price_bias": bias,
+        }
+    payload = {
+        "generated": datetime.now(UTC),
+        "days": days,
+        "holdout_days": strategies.HOLDOUT_DAYS,
+        "series": report,
+    }
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    out = settings.reports_dir / f"research-{datetime.now(UTC):%Y-%m-%dT%H%M}.json"
+    out.write_text(json.dumps(clean(payload), indent=2))
+    print(f"report: {out}")
+    if PUBLISH:
+        await publish(settings, "research", payload)
+
+
+def order_for(sig: Signal) -> CreateOrderV2Request:
+    """1-contract IOC at the current quote: buy YES at the ask, or sell YES at the bid."""
+    yes = sig.best_side == "yes"
+    return CreateOrderV2Request(
+        ticker=sig.ticker,
+        client_order_id=str(uuid.uuid4()),
+        side="bid" if yes else "ask",
+        count="1.00",
+        price=f"{sig.ask if yes else sig.bid:.4f}",
+        time_in_force="immediate_or_cancel",
+    )
+
+
+async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
+    """Price the soonest market in a series and (optionally) take the best side once."""
+    public = KalshiRest(KALSHI_URLS["production"])
+    try:
+        sigs = await signals(public, LivePricer(settings.history_dir), args.series)
+    finally:
+        await public.aclose()
+    if not sigs:
+        raise SystemExit(f"no priceable open market in {args.series}")
+    sig = max(sigs, key=lambda s_: s_.best_edge)
+    order = order_for(sig)
+    cost = sig.ask if sig.best_side == "yes" else 1 - sig.bid
+    print(
+        f"{sig.ticker}  {sig.seconds_left / 60:.1f} min left  spot {sig.spot:,.2f}  "
+        f"strike {sig.floor or sig.cap:,.2f}\n"
+        f"  fair {sig.fair:.3f}  bid {sig.bid:.2f}  ask {sig.ask:.2f}  "
+        f"edge YES {sig.edge_yes:+.3f}  NO {sig.edge_no:+.3f}  (after taker fee)\n"
+        f"  best: buy {sig.best_side.upper()} 1 contract for ${cost:.2f}, "
+        f"expected {sig.best_edge:+.3f} $/contract"
+    )
+    if not args.execute:
+        print("dry run: add --execute to place it")
+        return
+    if sig.best_edge < args.min_edge:
+        raise SystemExit(f"edge {sig.best_edge:+.3f} below --min-edge {args.min_edge}; not trading")
+    if settings.env.value == "production" and not args.confirm_real_money:
+        raise SystemExit("production order: pass --confirm-real-money to place a real trade")
+    rest = KalshiRest(settings.kalshi_trade_url, signer=signer_from(settings))
+    try:
+        resp = await rest.create_order(order)
+    finally:
+        await rest.aclose()
+    record = {
+        "ts": datetime.now(UTC).isoformat(),
+        "env": settings.env.value,
+        "manual_one_off": True,
+        "signal": dataclasses.asdict(sig),
+        "order": order.model_dump(),
+        "response": resp.model_dump(mode="json"),
+    }
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    log_path = settings.reports_dir / "trades.jsonl"
+    with log_path.open("a") as f:
+        f.write(json.dumps(clean(record)) + "\n")
+    await publish(
+        settings, "trades", [json.loads(line) for line in log_path.read_text().splitlines()]
+    )
+    print(
+        f"order {resp.order_id}: filled {resp.fill_count} @ {resp.average_fill_price}, "
+        f"fee {resp.average_fee_paid}, remaining {resp.remaining_count}"
+    )
 
 
 COMMANDS = {"record": record, "balance": balance, "markets": markets}
-DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate}
+PUBLISH = False  # set by --publish
+DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate, "research": research}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="edgebook")
-    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS]))
+    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once"]))
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--series", default="KXBTC15M")
+    parser.add_argument("--execute", action="store_true", help="actually place the order")
+    parser.add_argument("--min-edge", type=float, default=0.0)
+    parser.add_argument("--confirm-real-money", action="store_true")
+    parser.add_argument("--publish", action="store_true", help="push the report to the dashboard")
     args = parser.parse_args(argv)
+    global PUBLISH
+    PUBLISH = args.publish
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -122,7 +269,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         settings = Settings()
-        if args.command in DAY_COMMANDS:
+        if args.command == "trade-once":
+            asyncio.run(trade_once(settings, args))
+        elif args.command in DAY_COMMANDS:
             asyncio.run(DAY_COMMANDS[args.command](settings, args.days))
         else:
             asyncio.run(COMMANDS[args.command](settings))

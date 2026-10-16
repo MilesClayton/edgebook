@@ -16,9 +16,12 @@ from edgebook.venues.kalshi.models import (
     Balance,
     BatchGetMarketCandlesticksResponse,
     BidAskDistribution,
+    CreateOrderV2Request,
+    CreateOrderV2Response,
     MarketCandlestick,
     MarketCandlesticksResponse,
     MarketsPage,
+    PriceDistribution,
     RestMarket,
 )
 
@@ -68,6 +71,9 @@ def _schema_fields(schema: str) -> tuple[set[str], set[str]]:
         (MarketCandlesticksResponse, "MarketCandlesticksResponse"),
         (MarketCandlestick, "MarketCandlestick"),
         (BidAskDistribution, "BidAskDistribution"),
+        (PriceDistribution, "PriceDistribution"),
+        (CreateOrderV2Request, "CreateOrderV2Request"),
+        (CreateOrderV2Response, "CreateOrderV2Response"),
     ],
 )
 def test_rest_models_match_openapi(model: type, schema: str) -> None:
@@ -75,6 +81,8 @@ def test_rest_models_match_openapi(model: type, schema: str) -> None:
     ours = model.model_fields  # type: ignore[attr-defined]
     missing = set(ours) - props
     assert not missing, f"{schema} no longer has {missing}"
+    if schema.endswith("Request"):
+        return  # requests we send may require more than the spec (e.g. client_order_id)
     for name, field in ours.items():
         if field.is_required():
             assert name in required, f"{schema}.{name} is optional in the spec but required here"

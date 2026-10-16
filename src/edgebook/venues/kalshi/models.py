@@ -28,12 +28,15 @@ class RestMarket(_Wire):
     ticker: str
     event_ticker: str
     status: str
+    open_time: datetime | None = None
     close_time: datetime
     strike_type: str | None = None
     floor_strike: Decimal | None = None
     cap_strike: Decimal | None = None
     result: str = ""
     expiration_value: str = ""
+    yes_bid_dollars: Decimal | None = None
+    yes_ask_dollars: Decimal | None = None
 
     def to_core(self, underlying: str) -> Market:
         return Market(
@@ -59,10 +62,16 @@ class BidAskDistribution(_Wire):
     close_dollars: Decimal
 
 
+class PriceDistribution(_Wire):
+    close_dollars: Decimal | None = None  # null when nothing traded in the period
+
+
 class MarketCandlestick(_Wire):
     end_period_ts: int  # inclusive end of the period, Unix seconds
     yes_bid: BidAskDistribution
     yes_ask: BidAskDistribution
+    price: PriceDistribution
+    volume_fp: Decimal
 
 
 class MarketCandlesticksResponse(_Wire):
@@ -72,6 +81,30 @@ class MarketCandlesticksResponse(_Wire):
 
 class BatchGetMarketCandlesticksResponse(_Wire):
     markets: list[MarketCandlesticksResponse]
+
+
+class CreateOrderV2Request(BaseModel):
+    """V2 single-book order: ``bid`` buys YES at ``price``; ``ask`` sells YES (= buys NO)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ticker: str
+    client_order_id: str
+    side: Literal["bid", "ask"]
+    count: str  # fixed-point contracts, e.g. "1.00"
+    price: str  # fixed-point YES dollars, e.g. "0.5600"
+    time_in_force: Literal["fill_or_kill", "good_till_canceled", "immediate_or_cancel"]
+    self_trade_prevention_type: Literal["taker_at_cross", "maker"] = "taker_at_cross"
+    post_only: bool = False
+
+
+class CreateOrderV2Response(_Wire):
+    order_id: str
+    fill_count: Decimal
+    remaining_count: Decimal
+    average_fill_price: Decimal | None = None
+    average_fee_paid: Decimal | None = None
+    ts_ms: int
 
 
 # --- WebSocket --------------------------------------------------------------
