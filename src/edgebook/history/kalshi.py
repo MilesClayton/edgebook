@@ -29,18 +29,18 @@ log = logging.getLogger(__name__)
 
 HORIZONS_MIN = (60, 30, 15, 5)
 SCHEMA = make_schema(
-        ("series", pa.string()),
-        ("event_ticker", pa.string()),
-        ("ticker", pa.string()),
-        ("close_ts", pa.int64()),
-        ("strike_type", pa.string()),
-        ("floor", pa.float64()),
-        ("cap", pa.float64()),
-        ("result", pa.string()),
-        ("expiration_value", pa.float64()),
-        ("horizon_min", pa.int64()),
-        ("bid", pa.float64()),
-        ("ask", pa.float64()),
+    ("series", pa.string()),
+    ("event_ticker", pa.string()),
+    ("ticker", pa.string()),
+    ("close_ts", pa.int64()),
+    ("strike_type", pa.string()),
+    ("floor", pa.float64()),
+    ("cap", pa.float64()),
+    ("result", pa.string()),
+    ("expiration_value", pa.float64()),
+    ("horizon_min", pa.int64()),
+    ("bid", pa.float64()),
+    ("ask", pa.float64()),
 )
 
 
@@ -112,7 +112,7 @@ async def backfill(
         if m.result in ("yes", "no") and m.event_ticker not in done and m.close_time <= now:
             by_event[m.event_ticker].append(m)
     added = 0
-    for i, (event, ms) in enumerate(sorted(by_event.items())):
+    for i, (_event, ms) in enumerate(sorted(by_event.items())):
         close = max(m.close_time for m in ms)
         candles = await rest.candlesticks(
             [m.ticker for m in ms],
