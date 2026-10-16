@@ -12,8 +12,10 @@ from edgebook.core.types import (
     Position,
     Price,
     Prob,
+    Quantity,
     Side,
     parse_price,
+    parse_quantity,
 )
 
 __all__ = [
@@ -28,8 +30,10 @@ __all__ = [
     "Position",
     "Price",
     "Prob",
+    "Quantity",
     "Side",
     "edge_per_contract",
     "parse_price",
+    "parse_quantity",
     "trade_fee",
 ]

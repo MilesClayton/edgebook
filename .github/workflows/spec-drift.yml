@@ -1,0 +1,32 @@
+name: kalshi-spec-drift
+
+# Nightly: do our wire models still accept Kalshi's *live* published examples?
+# A failure here means Kalshi changed its API; refresh with scripts/update_kalshi_specs.sh.
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Fetch live specs
+        run: |
+          mkdir -p "$RUNNER_TEMP/kalshi"
+          for f in openapi.yaml asyncapi.yaml; do
+            curl -fsSL "https://docs.kalshi.com/$f" -o "$RUNNER_TEMP/kalshi/$f"
+          done
+      - run: uv run pytest tests/test_kalshi_spec_drift.py --no-cov
+        env:
+          KALSHI_SPEC_DIR: ${{ runner.temp }}/kalshi
+      - name: Show snapshot diff
+        if: always()
+        run: |
+          diff -u tests/fixtures/kalshi/asyncapi.yaml "$RUNNER_TEMP/kalshi/asyncapi.yaml" | head -200 || true
