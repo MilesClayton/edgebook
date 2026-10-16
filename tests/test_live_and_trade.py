@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from edgebook.app import cli
-from edgebook.config import Settings
+from edgebook.config import ProductionGuardError, Settings
 from edgebook.live import signals as live
 from edgebook.live.snapshot import SnapshotBuilder
 from edgebook.venues.kalshi.models import CreateOrderV2Response, RestMarket
@@ -114,7 +114,13 @@ async def test_signals_and_snapshot(pricer: live.LivePricer, tmp_path: Path) -> 
 
 
 def args(**kw: Any) -> argparse.Namespace:
-    base = {"series": "KXBTC15M", "execute": False, "min_edge": 0.0, "confirm_real_money": False}
+    base = {
+        "series": "KXBTC15M",
+        "execute": False,
+        "min_edge": 0.0,
+        "confirm_real_money": False,
+        "session_cap": None,
+    }
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -142,6 +148,10 @@ async def test_trade_once_dry_run_guards_and_execute(
         await cli.trade_once(prod, args(execute=True))
     assert rest.orders == []
 
+    with pytest.raises(ProductionGuardError, match="LIVE_TRADING_ENABLED"):
+        await cli.trade_once(prod, args(execute=True, confirm_real_money=True))
+    assert rest.orders == []
+
     await cli.trade_once(settings, args(execute=True))
     order = rest.orders[0]
     assert (order.side, order.count, order.price, order.time_in_force) == (
@@ -153,6 +163,8 @@ async def test_trade_once_dry_run_guards_and_execute(
     logged = json.loads((tmp_path / "r" / "trades.jsonl").read_text().splitlines()[0])
     assert logged["manual_one_off"] is True
     assert logged["response"]["order_id"] == "o1"
+    assert logged["session_cap_dollars"] == 5.0
+    assert logged["reserved_dollars"] > 0
 
 
 async def test_trade_once_no_market(

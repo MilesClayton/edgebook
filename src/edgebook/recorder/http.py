@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-KINDS = frozenset({"snapshot", "research", "calibration", "trades"})
+KINDS = frozenset({"snapshot", "research", "calibration", "trades", "execution", "control"})
 # Market data and model output only; readable without the token. Writes, and the
 # bot's own trade log, always require it.
 PUBLIC_READ = frozenset({"snapshot", "research", "calibration"})
