@@ -83,6 +83,20 @@ class BatchGetMarketCandlesticksResponse(_Wire):
     markets: list[MarketCandlesticksResponse]
 
 
+class PublicTrade(_Wire):
+    trade_id: str
+    ticker: str
+    yes_price_dollars: Decimal
+    count_fp: Decimal
+    taker_side: Side
+    created_time: datetime
+
+
+class GetTradesResponse(_Wire):
+    trades: list[PublicTrade]
+    cursor: str = ""
+
+
 class CreateOrderV2Request(BaseModel):
     """V2 single-book order: ``bid`` buys YES at ``price``; ``ask`` sells YES (= buys NO)."""
 

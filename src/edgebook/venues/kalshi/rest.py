@@ -20,8 +20,10 @@ from edgebook.venues.kalshi.models import (
     BatchGetMarketCandlesticksResponse,
     CreateOrderV2Request,
     CreateOrderV2Response,
+    GetTradesResponse,
     MarketCandlestick,
     MarketsPage,
+    PublicTrade,
     RestMarket,
 )
 from edgebook.venues.kalshi.ratelimit import TokenBucket
@@ -125,6 +127,17 @@ class KalshiRest:
             for m in page.markets:
                 out[m.market_ticker] = m.candlesticks
         return out
+
+    async def market_trades(self, ticker: str) -> list[PublicTrade]:
+        """Every public trade in a market (paginated, public)."""
+        params: dict[str, str | int] = {"ticker": ticker, "limit": 1000}
+        out: list[PublicTrade] = []
+        while True:
+            page = GetTradesResponse.model_validate(await self._get("/markets/trades", params))
+            out.extend(page.trades)
+            if not page.cursor or not page.trades:
+                return out
+            params["cursor"] = page.cursor
 
     async def create_order(self, order: CreateOrderV2Request) -> CreateOrderV2Response:
         """Place an order (signed). Never retried: a timeout may still have placed it."""
