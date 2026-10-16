@@ -1,5 +1,5 @@
 // edgebook dashboard. Page structure (sidebar router, metric cards, refresh
-// control, Plotly panels) adapted from ryanfrigo/kalshi-ai-trading-bot
+// control, chart panels) adapted from ryanfrigo/kalshi-ai-trading-bot
 // scripts/trading_dashboard.py, MIT License; see THIRD_PARTY_LICENSES.md.
 //
 // Every number carries a plain-English hover description (title attribute).
