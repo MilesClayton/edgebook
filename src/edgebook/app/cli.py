@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
+import json
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from edgebook.config import KALSHI_URLS, Settings
+from edgebook.history import coinbase
+from edgebook.history import kalshi as kalshi_history
 from edgebook.recorder.run import Recorder
 from edgebook.recorder.sink import ParquetSink
+from edgebook.research import calibrate as calib
 from edgebook.venues.kalshi.auth import KalshiSigner
 from edgebook.venues.kalshi.rest import KalshiRest
 from edgebook.venues.kalshi.ws import KALSHI_WS_URLS, KalshiWebSocket
@@ -64,12 +70,50 @@ async def markets(settings: Settings) -> None:
         await rest.aclose()
 
 
+async def backfill(settings: Settings, days: int) -> None:
+    log = logging.getLogger("edgebook.backfill")
+    # Spot needs extra history before the first market for the HAR warmup.
+    added = await coinbase.backfill(settings.history_dir, days + calib.WARMUP_DAYS + 1)
+    log.info("coinbase BTC-USD: +%d minutes", added)
+    rest = KalshiRest(KALSHI_URLS["production"])
+    try:
+        for series in settings.calibration_series:
+            n = await kalshi_history.backfill(rest, settings.history_dir, series, days)
+            log.info("kalshi %s: +%d rows", series, n)
+    finally:
+        await rest.aclose()
+
+
+async def calibrate(settings: Settings, days: int) -> None:
+    ts, close = coinbase.load(settings.history_dir)
+    cutoff = int(datetime.now(UTC).timestamp()) - days * 86_400
+    rows = [
+        r
+        for series in settings.calibration_series
+        for r in kalshi_history.load(settings.history_dir, series)
+        if r["close_ts"] >= cutoff
+    ]
+    report = calib.run(
+        ts,
+        close,
+        rows,
+        progress=lambda i, n: logging.getLogger("edgebook.calibrate").info("%d/%d rows", i, n),
+    )
+    print(calib.render(report))
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    out = settings.reports_dir / f"calibration-{datetime.now(UTC):%Y-%m-%dT%H%M}.json"
+    out.write_text(json.dumps(dataclasses.asdict(report), indent=2, default=str))
+    print(f"\nreport: {out}")
+
+
 COMMANDS = {"record": record, "balance": balance, "markets": markets}
+DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="edgebook")
-    parser.add_argument("command", choices=sorted(COMMANDS))
+    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS]))
+    parser.add_argument("--days", type=int, default=30)
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -77,7 +121,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         stream=sys.stdout,
     )
     try:
-        asyncio.run(COMMANDS[args.command](Settings()))
+        settings = Settings()
+        if args.command in DAY_COMMANDS:
+            asyncio.run(DAY_COMMANDS[args.command](settings, args.days))
+        else:
+            asyncio.run(COMMANDS[args.command](settings))
     except KeyboardInterrupt:
         return 130
     return 0

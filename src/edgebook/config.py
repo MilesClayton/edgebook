@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     record_series: tuple[str, ...] = ("KXBTCD", "KXBTC", "KXBTC15M")
     record_indices: tuple[str, ...] = ("BRTI",)
 
+    # Research
+    history_dir: Path = Path("history")
+    reports_dir: Path = Path("reports")
+    calibration_series: tuple[str, ...] = ("KXBTCD",)
+
     def kalshi_pem(self) -> bytes | None:
         if self.kalshi_private_key is not None:
             return self.kalshi_private_key.get_secret_value().encode()
