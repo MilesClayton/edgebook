@@ -32,16 +32,28 @@ def _check_prob(value: float) -> float:
 
 Price = Annotated[Decimal, AfterValidator(_check_price)]
 Prob = Annotated[float, AfterValidator(_check_prob)]
-Contracts = Annotated[int, Field(gt=0)]
+# Venues quote contract counts as fixed-point strings ("300.00"), so sizes are Decimal.
+Quantity = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
+
+
+def _to_decimal(raw: str | int | Decimal, what: str) -> Decimal:
+    try:
+        return raw if isinstance(raw, Decimal) else Decimal(raw)
+    except InvalidOperation as exc:
+        raise ValueError(f"not a {what}: {raw!r}") from exc
 
 
 def parse_price(raw: str | int | Decimal) -> Decimal:
     """Parse a venue price (dollar string or Decimal) into a validated price."""
-    try:
-        value = raw if isinstance(raw, Decimal) else Decimal(raw)
-    except InvalidOperation as exc:
-        raise ValueError(f"not a price: {raw!r}") from exc
-    return _check_price(value)
+    return _check_price(_to_decimal(raw, "price"))
+
+
+def parse_quantity(raw: str | int | Decimal) -> Decimal:
+    """Parse a fixed-point contract count; may be signed (book deltas)."""
+    value = _to_decimal(raw, "quantity")
+    if not value.is_finite():
+        raise ValueError(f"quantity must be finite, got {raw!r}")
+    return value
 
 
 class Side(StrEnum):
@@ -76,7 +88,7 @@ class Market(_Frozen):
 
 class BookLevel(_Frozen):
     price: Price
-    size: Contracts
+    size: Quantity
 
 
 class OrderBook(_Frozen):
@@ -126,7 +138,7 @@ class Order(_Frozen):
     side: Side
     action: Action
     price: Price
-    count: Contracts
+    count: Quantity
     post_only: bool = True
 
 
@@ -136,7 +148,7 @@ class Fill(_Frozen):
     side: Side
     action: Action
     price: Price
-    count: Contracts
+    count: Quantity
     role: LiquidityRole
     fee: Decimal
     ts: datetime

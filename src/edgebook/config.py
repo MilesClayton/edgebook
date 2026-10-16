@@ -11,7 +11,7 @@ import json
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 KALSHI_URLS = {
@@ -33,6 +33,23 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     viability_path: Path = Path("viability.json")
     min_viability_trades: int = Field(default=500, gt=0)
+
+    # Kalshi credentials: PEM content (Fly/GitHub secret) or a path to the .pem file.
+    kalshi_key_id: str | None = None
+    kalshi_private_key: SecretStr | None = None
+    kalshi_private_key_path: Path | None = None
+
+    # Recorder
+    data_dir: Path = Path("data")
+    record_series: tuple[str, ...] = ("KXBTCD", "KXBTC", "KXBTC15M")
+    record_indices: tuple[str, ...] = ("BRTI",)
+
+    def kalshi_pem(self) -> bytes | None:
+        if self.kalshi_private_key is not None:
+            return self.kalshi_private_key.get_secret_value().encode()
+        if self.kalshi_private_key_path is not None:
+            return self.kalshi_private_key_path.expanduser().read_bytes()
+        return None
 
     @property
     def kalshi_trade_url(self) -> str:

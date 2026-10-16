@@ -31,7 +31,7 @@ KALSHI_GENERAL = FeeSchedule()
 
 
 def trade_fee(
-    contracts: int,
+    contracts: Decimal | int,
     price: Decimal,
     role: LiquidityRole,
     schedule: FeeSchedule = KALSHI_GENERAL,
@@ -48,7 +48,7 @@ def edge_per_contract(
     fair_prob: float,
     price: Decimal,
     role: LiquidityRole,
-    contracts: int = 1,
+    contracts: Decimal | int = 1,
     schedule: FeeSchedule = KALSHI_GENERAL,
 ) -> Decimal:
     """Expected profit per contract of buying YES at ``price``, after fees.
