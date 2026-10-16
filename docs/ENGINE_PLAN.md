@@ -16,7 +16,7 @@ LIVE status through out-of-sample gates.
 | Spec § | Need | Existing (`src/edgebook/…`) | Gap / work |
 |---|---|---|---|
 | 1 | stack, modular services, env config, pytest | uv + pydantic-settings, ruff/mypy-strict CI, 94% coverage | add `requirements.txt` export, `.env.example`, FastAPI, SQLite |
-| 2 crypto | multi-exchange BBO, trades, 1s/1m changes, RV, flow, OBI, discrepancies, latency/health | Coinbase 1m REST only | **Stage 1:** `feeds/` Coinbase, Kraken, Bitstamp WebSockets → `CompositeSpot` (BBO, trade flow, OBI, cross-exchange spread, staleness, latency) |
+| 2 crypto | multi-exchange BBO, trades, 1s/1m changes, RV, flow, OBI, discrepancies, latency/health | Coinbase 1m REST history; `feeds/` now has Coinbase, Kraken and Bitstamp parsers/readers plus `CompositeSpot` and 1s bars | capture and validate live streams, then connect the composite to the feature pipeline and recorder |
 | 2 Kalshi | contracts, rules, target, time left, book, trades, positions, fills, fees | `venues/kalshi` (signed REST/WS, books, trades, BRTI + 60s avg), recorder | add positions/fills/orders reads for reconciliation (Stage 5) |
 | 3 | calibrated P(YES), E[settle], uncertainty, reversal prob | HAR + Student-t pricer w/ 60s averaging & known partial average; calibration tools | **Stage 3:** `engine/forecast.py` = pricer baseline + walk-forward logistic calibration that may blend the market price; outputs p, σ, interval, reversal prob |
 | 4 | executable price, EV after fees+slippage, liquidity | `core/fees`, `live/signals` edges | **Stage 4:** `engine/ev.py` depth-walked executable price, entry *and* exit fees, slippage, ROC, liquidity |
@@ -33,7 +33,8 @@ LIVE status through out-of-sample gates.
 1. **Multi-exchange crypto feeds** (`feeds/`): pure parsers per venue,
    reconnecting async clients, `CompositeSpot` (median mid, per-venue
    staleness, cross-venue spread in bps, 1 s bars, trade-flow imbalance,
-   top-of-book imbalance, latency).
+   top-of-book imbalance, latency). The adapter and composite code is in place;
+   live capture and validation are still required before relying on it.
 2. **Live feature pipeline** (`engine/features.py`): point-in-time features
    from CompositeSpot + Kalshi book + BRTI (distance to target in σ, time left,
    momentum/acceleration, RV regime, flow, OBI, market-implied p).

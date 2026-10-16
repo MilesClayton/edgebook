@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     viability_path: Path = Path("viability.json")
     min_viability_trades: int = Field(default=500, gt=0)
+    live_session_cap_dollars: float = Field(default=5.0, gt=0)
 
     # Kalshi credentials: PEM content (Fly/GitHub secret) or a path to the .pem file.
     kalshi_key_id: str | None = None

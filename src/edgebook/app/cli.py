@@ -16,8 +16,15 @@ import sys
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
 
-from edgebook.config import KALSHI_URLS, Settings
+from edgebook.config import KALSHI_URLS, Settings, assert_live_trading_allowed
+from edgebook.core.fees import trade_fee
+from edgebook.core.types import LiquidityRole
+from edgebook.engine.loop import LiveEngine
+from edgebook.engine.state import LiveState
+from edgebook.feeds.run import MultiExchangeSpot
 from edgebook.history import coinbase
 from edgebook.history import kalshi as kalshi_history
 from edgebook.live.signals import LivePricer, Signal, signals
@@ -33,6 +40,8 @@ from edgebook.venues.kalshi.models import CreateOrderV2Request
 from edgebook.venues.kalshi.rest import KalshiRest
 from edgebook.venues.kalshi.ws import KALSHI_WS_URLS, KalshiWebSocket
 
+log = logging.getLogger(__name__)
+
 
 def signer_from(settings: Settings) -> KalshiSigner:
     pem = settings.kalshi_pem()
@@ -42,6 +51,42 @@ def signer_from(settings: Settings) -> KalshiSigner:
             "(or EDGEBOOK_KALSHI_PRIVATE_KEY_PATH)"
         )
     return KalshiSigner.from_pem(settings.kalshi_key_id, pem)
+
+
+def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEngine:
+    """Run the live decision engine + $500k paper account inside the recorder."""
+    state = LiveState()
+    engine = LiveEngine(state, settings.data_dir / "engine" / "paper.json")
+    spot = MultiExchangeSpot()
+
+    async def engine_loop() -> None:
+        n = 0
+        while True:
+            engine.tick()
+            n += 1
+            if n % 2 == 0:
+                dashboard_http.write_kind(store, "live", clean(engine.live_payload()))
+                dashboard_http.write_kind(store, "paper", clean(engine.paper_payload()))
+            if n % 10 == 0:
+                engine.save()
+            await asyncio.sleep(1.0)
+
+    async def settle_loop() -> None:
+        while True:
+            for ticker in sorted(engine.pending_settlement):
+                market = await recorder.rest.market(ticker)
+                if market.result in ("yes", "no"):
+                    engine.settle(ticker, market.result)
+            await asyncio.sleep(20.0)
+
+    async def exchanges_loop() -> None:
+        async for update in spot.updates():
+            state.set_composite(update.snapshot, update.snapshot.timestamp_ms)
+
+    recorder.on_message = state.on_message
+    recorder.on_market = state.set_market
+    recorder.background += [engine_loop, settle_loop, exchanges_loop]
+    return engine
 
 
 async def record(settings: Settings) -> None:
@@ -70,6 +115,7 @@ async def record(settings: Settings) -> None:
             dashboard_http.write_kind(store, "snapshot", clean(await builder.build()))
 
         recorder.on_minute = write_snapshot
+        attach_engine(settings, recorder, store)
     await recorder.run()
 
 
@@ -192,6 +238,28 @@ def order_for(sig: Signal) -> CreateOrderV2Request:
     )
 
 
+def order_debit(sig: Signal) -> float:
+    """Maximum dollars debited for the IOC order, including the taker fee."""
+    price = Decimal(str(sig.ask if sig.best_side == "yes" else sig.bid))
+    cost = price if sig.best_side == "yes" else Decimal("1") - price
+    return float(cost + trade_fee(1, price, LiquidityRole.TAKER))
+
+
+def session_spend(log_path: Path, env: str) -> float:
+    """Read only prior reserved spend from the same environment's order log."""
+    if not log_path.is_file():
+        return 0.0
+    total = 0.0
+    for line in log_path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+            if record.get("env") == env:
+                total += float(record.get("reserved_dollars", 0))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    return total
+
+
 async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
     """Price the soonest market in a series and (optionally) take the best side once."""
     public = KalshiRest(KALSHI_URLS["production"])
@@ -219,12 +287,25 @@ async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
         raise SystemExit(f"edge {sig.best_edge:+.3f} below --min-edge {args.min_edge}; not trading")
     if settings.env.value == "production" and not args.confirm_real_money:
         raise SystemExit("production order: pass --confirm-real-money to place a real trade")
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    log_path = settings.reports_dir / "trades.jsonl"
+    cap = settings.live_session_cap_dollars if args.session_cap is None else args.session_cap
+    reserved = order_debit(sig)
+    spent = session_spend(log_path, settings.env.value)
+    if spent + reserved > cap:
+        raise SystemExit(
+            f"session cap ${cap:.2f}: ${spent:.2f} already reserved, "
+            f"next order needs ${reserved:.2f}"
+        )
+    # Confirmation protects against accidental clicks; the viability gate protects
+    # capital by requiring a separately measured, positive paper-trading result.
+    assert_live_trading_allowed(settings)
     rest = KalshiRest(settings.kalshi_trade_url, signer=signer_from(settings))
     try:
         resp = await rest.create_order(order)
     finally:
         await rest.aclose()
-    record = {
+    record: dict[str, object] = {
         "ts": datetime.now(UTC).isoformat(),
         "env": settings.env.value,
         "manual_one_off": True,
@@ -232,8 +313,9 @@ async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
         "order": order.model_dump(),
         "response": resp.model_dump(mode="json"),
     }
-    settings.reports_dir.mkdir(parents=True, exist_ok=True)
-    log_path = settings.reports_dir / "trades.jsonl"
+    record["session_cap_dollars"] = cap
+    record["reserved_dollars"] = reserved
+    record["session_reserved_dollars"] = spent + reserved
     with log_path.open("a") as f:
         f.write(json.dumps(clean(record)) + "\n")
     await publish(
@@ -258,6 +340,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--execute", action="store_true", help="actually place the order")
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--confirm-real-money", action="store_true")
+    parser.add_argument(
+        "--session-cap", type=float, default=None, help="maximum cumulative order debit"
+    )
     parser.add_argument("--publish", action="store_true", help="push the report to the dashboard")
     args = parser.parse_args(argv)
     global PUBLISH

@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from edgebook.recorder.rows import market_row, message_rows
 from edgebook.recorder.sink import ParquetSink
@@ -40,6 +42,9 @@ class Recorder:
         discover_every_s: float = 60.0,
         settle_every_s: float = 300.0,
         on_minute: Callable[[], Awaitable[object]] | None = None,
+        on_message: Callable[[Any, int], None] | None = None,
+        on_market: Callable[[Any, str], None] | None = None,
+        background: Sequence[Callable[[], Awaitable[object]]] = (),
     ) -> None:
         self.rest = rest
         self.ws = ws
@@ -49,15 +54,63 @@ class Recorder:
         self.discover_every_s = discover_every_s
         self.settle_every_s = settle_every_s
         self.on_minute = on_minute  # e.g. publish a dashboard snapshot; failures are logged
+        self.on_message = on_message  # live engine state updates (every WS message)
+        self.on_market = on_market  # live engine market registry (every discovery pass)
+        self.background = list(background)  # long-running tasks (engine loop, feeds)
         self.subscribed: set[str] = set()
         self.settled: set[str] = set()
         self.messages = 0
+        # The exchange trade feed is anonymous.  Keep a bounded in-memory
+        # window for dashboard diagnostics; raw trades still go to Parquet.
+        self.recent_public_trades: deque[dict[str, Any]] = deque()
+
+    def observe_public_trade(self, row: dict[str, Any]) -> None:
+        now = now_ms()
+        self.recent_public_trades.append({**row, "observed_ts_ms": now})
+        cutoff = now - 15 * 60_000
+        while (
+            self.recent_public_trades
+            and int(self.recent_public_trades[0]["observed_ts_ms"]) < cutoff
+        ):
+            self.recent_public_trades.popleft()
+
+    def public_flow(self) -> dict[str, Any]:
+        """Aggregate recent anonymous public trades; this is never wallet data."""
+        now = now_ms()
+        windows = (60, 300, 900)
+        summary: list[dict[str, Any]] = []
+        for seconds in windows:
+            cutoff = now - seconds * 1000
+            rows = [
+                row for row in self.recent_public_trades if int(row["observed_ts_ms"]) >= cutoff
+            ]
+            yes = sum(float(row["count"]) for row in rows if row["taker_side"] == "yes")
+            no = sum(float(row["count"]) for row in rows if row["taker_side"] == "no")
+            notional = sum(float(row["count"]) * float(row["yes_price"]) for row in rows)
+            summary.append(
+                {
+                    "seconds": seconds,
+                    "trades": len(rows),
+                    "yes_contracts": yes,
+                    "no_contracts": no,
+                    "net_yes_contracts": yes - no,
+                    "yes_notional": notional,
+                }
+            )
+        recent = list(self.recent_public_trades)[-12:]
+        return {
+            "label": "Anonymous public trade flow; individual traders cannot be identified.",
+            "windows": summary,
+            "recent": recent,
+        }
 
     async def discover_once(self) -> list[str]:
         new: list[str] = []
         seen = now_ms()
         for series in self.series:
             for m in await self.rest.markets(series, status="open"):
+                if self.on_market is not None:
+                    self.on_market(m, series)
                 if m.ticker not in self.subscribed:
                     self.subscribed.add(m.ticker)
                     self.sink.add("markets", market_row(series, m, seen))
@@ -93,8 +146,12 @@ class Recorder:
         async for msg in self.ws.messages():
             recv = now_ms()
             self.messages += 1
+            if self.on_message is not None:
+                self.on_message(msg, recv)
             for stream, row in message_rows(msg, recv):
                 self.sink.add(stream, row)
+                if stream == "trades":
+                    self.observe_public_trade(row)
 
     async def _housekeeping(self) -> None:
         self.sink.flush_due()
@@ -107,6 +164,15 @@ class Recorder:
             self.sink.rows_written,
         )
 
+    async def _guard(self, job: Callable[[], Awaitable[object]]) -> None:
+        """Restart a background job after a crash instead of killing the recorder."""
+        while True:
+            try:
+                await job()
+            except Exception:
+                log.exception("background job %s crashed; restarting in 5s", job)
+            await asyncio.sleep(5.0)
+
     async def run(self) -> None:
         try:
             async with asyncio.TaskGroup() as tg:
@@ -116,6 +182,8 @@ class Recorder:
                 tg.create_task(self.stream())
                 if self.on_minute is not None:
                     tg.create_task(self._every(60.0, "on_minute", self.on_minute))
+                for job in self.background:
+                    tg.create_task(self._guard(job))
         finally:
             self.sink.flush_all()
             await self.ws.close()
