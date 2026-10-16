@@ -3,12 +3,16 @@
 #
 # One-time setup (see README "Deploy"):
 #   fly apps create edgebook-recorder
-#   fly volumes create recorder_data --app edgebook-recorder --region iad --size 10
+#   fly volumes create recorder_data --app edgebook-recorder --region iad --size 40
 #   fly secrets set --app edgebook-recorder EDGEBOOK_KALSHI_KEY_ID=... \
 #     EDGEBOOK_KALSHI_PRIVATE_KEY="$(cat ~/path/to/kalshi-prod.pem)"
 
 app = "edgebook-recorder"
 primary_region = "iad"  # Ashburn, VA: closest Fly region to Kalshi's US-East infrastructure
+
+# SIGINT lets the recorder flush its Parquet buffers before exit.
+kill_signal = "SIGINT"
+kill_timeout = 30
 
 [build]
   dockerfile = "Dockerfile"
@@ -30,7 +34,8 @@ primary_region = "iad"  # Ashburn, VA: closest Fly region to Kalshi's US-East in
   retries = 10
   processes = ["recorder"]
 
+# Measured: ~1,500 msgs/s, ~12% of one core, ~155MB RSS, ~1.5GB/day of Parquet.
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = "shared-cpu-4x"
+  memory = "1gb"
   processes = ["recorder"]
