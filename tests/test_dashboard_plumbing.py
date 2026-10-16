@@ -45,9 +45,11 @@ def test_clean_makes_strict_json() -> None:
 async def test_store_auth_roundtrip(tmp_path: Path) -> None:
     async with TestClient(TestServer(make_app(tmp_path, "secret"))) as client:
         assert (await client.get("/healthz")).status == 200
-        assert (await client.get("/dashboard/snapshot")).status == 401
+        # public read, not yet written
+        assert (await client.get("/dashboard/snapshot")).status == 404
+        assert (await client.get("/dashboard/trades")).status == 401  # trade log needs the token
         auth = {"Authorization": "Bearer secret"}
-        assert (await client.get("/dashboard/snapshot", headers=auth)).status == 404
+        assert (await client.get("/dashboard/trades", headers=auth)).status == 404
         assert (await client.get("/dashboard/nope", headers=auth)).status == 404
         r = await client.post("/dashboard/research", json={"data": {"k": 1}}, headers=auth)
         assert r.status == 200

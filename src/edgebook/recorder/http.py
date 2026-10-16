@@ -1,7 +1,7 @@
 """Tiny authenticated JSON store for the dashboard, served by the recorder.
 
 GET  /healthz                 -> 200 (no auth; Fly health check)
-GET  /dashboard/{kind}        -> latest JSON for kind (Bearer token)
+GET  /dashboard/{kind}        -> latest JSON (public for market/model kinds; trades need the token)
 POST /dashboard/{kind}        -> replace JSON for kind (Bearer token)
 
 Files live on the recorder's volume under ``<data_dir>/dashboard/``. The
@@ -21,6 +21,9 @@ from typing import Any
 from aiohttp import web
 
 KINDS = frozenset({"snapshot", "research", "calibration", "trades"})
+# Market data and model output only; readable without the token. Writes, and the
+# bot's own trade log, always require it.
+PUBLIC_READ = frozenset({"snapshot", "research", "calibration"})
 MAX_BYTES = 8 * 1024 * 1024
 
 
@@ -52,9 +55,10 @@ def make_app(directory: Path, token: str) -> web.Application:
         return web.Response(text="ok")
 
     async def get_kind(request: web.Request) -> web.Response:
-        if not authorized(request):
+        kind = kind_of(request)
+        if kind not in PUBLIC_READ and not authorized(request):
             raise web.HTTPUnauthorized()
-        path = directory / f"{kind_of(request)}.json"
+        path = directory / f"{kind}.json"
         if not path.exists():
             raise web.HTTPNotFound(text="not published yet")
         return web.Response(body=path.read_bytes(), content_type="application/json")
