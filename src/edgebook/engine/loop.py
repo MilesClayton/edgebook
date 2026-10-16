@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -41,6 +42,8 @@ class LiveEngine:
         self.clock = clock
         self.calls: list[Call] = []
         self.pending_settlement: set[str] = set()
+        self.last_action: dict[str, str] = {}
+        self.signal_log: deque[dict[str, Any]] = deque(maxlen=200)
 
     # ---- market selection ---------------------------------------------------
     def live_markets(self, t_ms: int) -> list[MarketInfo]:
@@ -97,6 +100,7 @@ class LiveEngine:
                     "NO TRADE",
                     "Daily loss limit reached: entries paused until tomorrow (UTC).",
                 )
+            self._log_change(call, t)
             calls.append(call)
         # markets past close that we still hold wait for Kalshi's result
         self.pending_settlement = {
@@ -108,6 +112,29 @@ class LiveEngine:
             acct.equity_series.append((t, round(acct.equity(self._marks()), 2)))
         self.calls = calls
         return calls
+
+    def _log_change(self, call: Call, t: int) -> None:
+        """Record every time a market's call changes (the 'when to act' history)."""
+        prev = self.last_action.get(call.ticker)
+        if prev == call.action:
+            return
+        self.last_action[call.ticker] = call.action
+        if prev is None and call.action == "NO TRADE":
+            return  # don't log the first quiet state of every market
+        self.signal_log.append(
+            {
+                "ts_ms": t,
+                "ticker": call.ticker,
+                "series": call.series,
+                "strike": call.strike,
+                "from": prev,
+                "to": call.action,
+                "fair_up": call.fair_up,
+                "up_price": call.up_price,
+                "down_price": call.down_price,
+                "reason": call.reason,
+            }
+        )
 
     def settle(self, ticker: str, result: str) -> None:
         if self.account.settle(ticker, result, self.clock()) is not None:
@@ -140,6 +167,7 @@ class LiveEngine:
             "index_series": [[ts, v] for ts, v in list(self.state.index)[-900:]],
             "config": asdict(self.cfg),
             "calls": [asdict(c) for c in self.calls],
+            "signal_log": list(self.signal_log)[-100:],
         }
 
     def paper_payload(self) -> dict[str, Any]:

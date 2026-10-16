@@ -242,3 +242,42 @@ def test_engine_shows_nearest_hourly_strikes(tmp_path: Path) -> None:
     assert shown[0] == "M"
     assert len(shown) == 1 + 6
     assert "H4" in shown  # 82,000 strike is nearest
+
+
+def test_buy_limit_and_sell_trigger_math() -> None:
+    from edgebook.engine.decide import buy_limit, sell_trigger
+
+    lim = buy_limit(0.70, 0.04)
+    assert lim is not None
+    assert 0.70 - lim - fee(lim) >= 0.04 - 1e-9
+    assert 0.70 - (lim + 0.01) - fee(lim + 0.01) < 0.04  # one cent more is too much
+    assert buy_limit(0.03, 0.04) is None  # nothing is cheap enough
+    trig = sell_trigger(0.60, 0.005)
+    assert trig is not None
+    assert trig - fee(trig) >= 0.595 - 1e-9
+    assert sell_trigger(1.5, 0.0) is None
+
+
+def test_call_exposes_levels_and_market_view() -> None:
+    cfg = EngineConfig()
+    c = evaluate(world(spot=82_200.0), world().markets["M"], NOW, cfg)
+    assert c.market_up == pytest.approx(0.49)
+    assert c.buy_up_below is not None
+    assert c.up_price is not None
+    assert c.up_price <= c.buy_up_below  # it says BUY UP, so the price is under the limit
+    assert c.z_score is not None
+    assert c.z_score > 2
+
+
+def test_signal_log_records_changes_only(tmp_path: Path) -> None:
+    s = world(spot=82_000.0)
+    eng = LiveEngine(s, tmp_path / "p.json", clock=lambda: NOW)
+    eng.tick()
+    eng.tick()
+    assert list(eng.signal_log) == []  # first quiet NO TRADE is not logged
+    s2 = world(spot=82_200.0)
+    eng.state = s2
+    eng.tick()
+    log = eng.live_payload()["signal_log"]
+    assert log[-1]["to"] == "BUY UP"
+    assert log[-1]["from"] == "NO TRADE"

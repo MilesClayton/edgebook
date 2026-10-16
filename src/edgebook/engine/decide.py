@@ -66,12 +66,37 @@ class Call:
     depth_down: float = 0.0
     position: Position | None = None
     sigma_per_min_bps: float | None = None
+    market_up: float | None = None  # Kalshi's implied P(UP): mid of best bid/ask
+    buy_up_below: float | None = None  # highest UP price that still clears min_edge
+    buy_down_below: float | None = None
+    sell_up_at: float | None = None  # lowest UP bid at which selling beats holding
+    sell_down_at: float | None = None
+    z_score: float | None = None  # index distance from strike in remaining std devs
     gates: dict[str, bool] = field(default_factory=dict)
 
 
 def fee(price: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
     p = min(max(price, 0.0), 1.0)
     return float(trade_fee(1, Decimal(f"{p:.4f}"), role))
+
+
+def buy_limit(fair: float, min_edge: float) -> float | None:
+    """Highest whole-cent price p with fair - p - fee(p) >= min_edge (None if none)."""
+    best = None
+    for cents in range(1, 100):
+        p = cents / 100
+        if fair - p - fee(p) >= min_edge - 1e-9:
+            best = p
+    return best
+
+
+def sell_trigger(fair: float, hysteresis: float) -> float | None:
+    """Lowest whole-cent bid b where b - fee(b) >= fair - hysteresis (None if never)."""
+    for cents in range(1, 100):
+        b = cents / 100
+        if b - fee(b) >= fair - hysteresis - 1e-9:
+            return b
+    return None
 
 
 def fair_up(state: LiveState, m: MarketInfo, now_ms: int, cfg: EngineConfig) -> float | None:
@@ -138,7 +163,21 @@ def evaluate(
 
     p = fair_up(state, m, now_ms, cfg)
     call.fair_up = p
+    if up_ask and up_bid:
+        call.market_up = (up_ask.price + up_bid.price) / 2
+    sig_now = state.sigma_per_s(now_ms)
+    if cur and call.strike and sig_now and left > 0:
+        horizon = max(left - WINDOW_S, 0) + min(left, WINDOW_S) / 3
+        call.z_score = math.log(cur[1] / call.strike) / (
+            max(sig_now, cfg.min_sigma_per_s) * math.sqrt(horizon)
+        )
+        if m.strike_type in ("less", "less_or_equal"):
+            call.z_score = -call.z_score
     if p is not None:
+        call.buy_up_below = buy_limit(p, cfg.min_edge)
+        call.buy_down_below = buy_limit(1 - p, cfg.min_edge)
+        call.sell_up_at = sell_trigger(p, cfg.sell_hysteresis)
+        call.sell_down_at = sell_trigger(1 - p, cfg.sell_hysteresis)
         if up_ask:
             call.edge_up = p - up_ask.price - fee(up_ask.price)
         if down_ask:
