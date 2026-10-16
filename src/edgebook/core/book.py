@@ -43,6 +43,17 @@ class BookState:
         else:
             levels[price] = size
 
+    def best(self, side: Side) -> tuple[Decimal, Decimal] | None:
+        """Best (highest) bid level on ``side`` without building an OrderBook."""
+        levels = self._levels[side]
+        if not levels:
+            return None
+        price = max(levels)
+        return price, levels[price]
+
+    def size_at(self, side: Side, price: Decimal) -> Decimal:
+        return self._levels[side].get(price, Decimal(0))
+
     def reset(self) -> None:
         self._levels = {Side.YES: {}, Side.NO: {}}
         self.ready = False

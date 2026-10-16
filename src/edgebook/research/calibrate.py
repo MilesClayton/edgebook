@@ -79,7 +79,7 @@ class CalibrationReport:
     horizons: list[HorizonReport] = field(default_factory=list)
 
 
-class _Spot:
+class Spot:
     def __init__(self, ts: npt.NDArray[np.int64], close: F64) -> None:
         order = np.argsort(ts)
         self.ts, self.close = ts[order], close[order]
@@ -100,7 +100,7 @@ class _Spot:
         return out
 
 
-class _HarCache:
+class HarCache:
     """One HAR fit per UTC day, using only hours before that day."""
 
     def __init__(self, hourly: HourlyRV) -> None:
@@ -122,7 +122,7 @@ class _HarCache:
         return self.fits[day]
 
 
-def _taker_pnl(p: float, bid: float, ask: float, y: int, threshold: float) -> float | None:
+def taker_pnl(p: float, bid: float, ask: float, y: int, threshold: float) -> float | None:
     """Per-contract P&L of crossing the spread when edge after fees beats threshold."""
     fee_yes = float(trade_fee(1, Decimal(str(ask)), LiquidityRole.TAKER))
     if p - ask - fee_yes > threshold:
@@ -142,8 +142,8 @@ def run(
     models: Sequence[ModelSpec] = MODELS,
     progress: Callable[[int, int], None] | None = None,
 ) -> CalibrationReport:
-    spot = _Spot(spot_ts, spot_close)
-    har = _HarCache(hourly_realized(spot_ts, spot_close))
+    spot = Spot(spot_ts, spot_close)
+    har = HarCache(hourly_realized(spot_ts, spot_close))
     skipped: dict[str, int] = {}
 
     def skip(reason: str) -> None:
@@ -229,7 +229,7 @@ def run(
             taker = []
             for th in thresholds:
                 trades = (
-                    _taker_pnl(float(pi), bi, ai, int(yi), th)
+                    taker_pnl(float(pi), bi, ai, int(yi), th)
                     for pi, bi, ai, yi in zip(probs, b["bid"], b["ask"], y, strict=True)
                 )
                 arr = np.array([x for x in trades if x is not None], dtype=np.float64)

@@ -111,12 +111,19 @@ def test_backfill_and_calibrate_commands(
     monkeypatch.setenv("EDGEBOOK_HISTORY_DIR", str(tmp_path / "h"))
     monkeypatch.setenv("EDGEBOOK_REPORTS_DIR", str(tmp_path / "r"))
     assert cli.main(["backfill", "--days", "3"]) == 0
-    assert calls == [("coinbase", 3 + calib.WARMUP_DAYS + 1), ("KXBTCD", 3)]
+    assert calls == [
+        ("coinbase", 3 + calib.WARMUP_DAYS + 1),
+        ("KXBTCD", 3),
+        ("KXBTC15M", 3),
+    ]
 
     monkeypatch.setattr(
         coinbase, "load", lambda d: (np.array([0], dtype=np.int64), np.array([1.0]))
     )
-    monkeypatch.setattr(kalshi_history, "load", lambda d, s: [{"close_ts": 0}, {"close_ts": 2**40}])
+    old = {"ticker": "OLD", "open_ts": 0, "close_ts": 3600, "result": "no"}
+    new = {"ticker": "NEW", "open_ts": 2**40 - 3600, "close_ts": 2**40, "result": "yes"}
+    monkeypatch.setattr(kalshi_history, "load_markets", lambda d, s: [old, new])
+    monkeypatch.setattr(kalshi_history, "load_candles", lambda d, s: {})
     seen: list[int] = []
 
     def fake_run(ts: Any, close: Any, rows: list[dict[str, Any]], **kw: Any) -> CalibrationReport:
@@ -127,6 +134,6 @@ def test_backfill_and_calibrate_commands(
     monkeypatch.setattr(calib, "run", fake_run)
     monkeypatch.setattr(calib, "render", lambda r: "REPORT")
     assert cli.main(["calibrate", "--days", "3"]) == 0
-    assert seen == [1]  # the old row falls outside --days
+    assert seen == [9]  # only the new market: 4 hourly horizons + 5 fifteen-minute ones
     assert "REPORT" in capsys.readouterr().out
     assert len(list((tmp_path / "r").glob("calibration-*.json"))) == 1

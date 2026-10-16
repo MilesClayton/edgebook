@@ -1,0 +1,86 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --good: #15803d;
+  --good-bg: #dcfce7;
+  --bad: #b91c1c;
+  --bad-bg: #fee2e2;
+  --warn-bg: #fef3c7;
+  --sidebar: #0f172a;
+  --sidebar-text: #cbd5e1;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1020;
+    --panel: #121a2e;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --border: #1f2a44;
+    --accent: #60a5fa;
+    --good: #4ade80;
+    --good-bg: #052e16;
+    --bad: #f87171;
+    --bad-bg: #3b0a0a;
+    --warn-bg: #3a2a05;
+    --sidebar: #070b16;
+    --sidebar-text: #cbd5e1;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b1020; --panel: #121a2e; --text: #e5e7eb; --muted: #94a3b8; --border: #1f2a44;
+  --accent: #60a5fa; --good: #4ade80; --good-bg: #052e16; --bad: #f87171; --bad-bg: #3b0a0a;
+  --warn-bg: #3a2a05; --sidebar: #070b16;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; display: flex; min-height: 100vh; background: var(--bg); color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+.sidebar { width: 220px; flex: none; background: var(--sidebar); color: var(--sidebar-text); padding: 20px 14px; }
+.brand { font-weight: 700; font-size: 18px; color: #fff; margin-bottom: 22px; }
+.tag { font-size: 11px; font-weight: 600; background: #1e293b; padding: 2px 6px; border-radius: 6px; margin-left: 4px; }
+nav a { display: block; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--sidebar-text); }
+nav a:hover { background: #1e293b; }
+nav a.active { background: var(--accent); color: #fff; }
+.side-status { margin-top: 26px; font-size: 12px; }
+.side-status .label { text-transform: uppercase; letter-spacing: .06em; color: #64748b; margin-bottom: 6px; }
+main { flex: 1; min-width: 0; padding: 20px 28px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+h1 { margin: 0; font-size: 22px; }
+h2 { font-size: 16px; margin: 22px 0 10px; }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 7px 14px; cursor: pointer; font: inherit; }
+.muted { color: var(--muted); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+.card .k { color: var(--muted); font-size: 12px; }
+.card .v { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.card .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.card.good { border-left: 4px solid var(--good); }
+.card.bad { border-left: 4px solid var(--bad); }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-top: 12px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.pos { color: var(--good); font-weight: 600; }
+td.neg { color: var(--bad); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.good { background: var(--good-bg); color: var(--good); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.warn { background: var(--warn-bg); }
+.chart { height: 340px; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+footer { margin-top: 30px; font-size: 12px; }
+footer a { color: var(--accent); }
+@media (max-width: 760px) {
+  body { flex-direction: column; }
+  .sidebar { width: auto; padding: 12px 16px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .side-status { display: none; }
+  main { padding: 16px; }
+}

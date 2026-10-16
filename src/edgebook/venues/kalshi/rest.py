@@ -18,8 +18,12 @@ from edgebook.venues.kalshi.auth import KalshiSigner
 from edgebook.venues.kalshi.models import (
     Balance,
     BatchGetMarketCandlesticksResponse,
+    CreateOrderV2Request,
+    CreateOrderV2Response,
+    GetTradesResponse,
     MarketCandlestick,
     MarketsPage,
+    PublicTrade,
     RestMarket,
 )
 from edgebook.venues.kalshi.ratelimit import TokenBucket
@@ -34,6 +38,7 @@ SERIES_UNDERLYING: Mapping[str, str] = {
     "KXETH15M": "ETH",
 }
 BASIC_READ_TOKENS_PER_S = 200
+BASIC_WRITE_TOKENS_PER_S = 100
 CANDLE_BATCH = 100  # Kalshi max tickers per batch candlestick request
 MAX_RETRIES = 5
 
@@ -57,6 +62,7 @@ class KalshiRest:
         self._signer = signer
         self._client = client or httpx.AsyncClient(timeout=10.0)
         self._bucket = bucket or TokenBucket(BASIC_READ_TOKENS_PER_S)
+        self._write_bucket = TokenBucket(BASIC_WRITE_TOKENS_PER_S)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -121,6 +127,30 @@ class KalshiRest:
             for m in page.markets:
                 out[m.market_ticker] = m.candlesticks
         return out
+
+    async def market_trades(self, ticker: str) -> list[PublicTrade]:
+        """Every public trade in a market (paginated, public)."""
+        params: dict[str, str | int] = {"ticker": ticker, "limit": 1000}
+        out: list[PublicTrade] = []
+        while True:
+            page = GetTradesResponse.model_validate(await self._get("/markets/trades", params))
+            out.extend(page.trades)
+            if not page.cursor or not page.trades:
+                return out
+            params["cursor"] = page.cursor
+
+    async def create_order(self, order: CreateOrderV2Request) -> CreateOrderV2Response:
+        """Place an order (signed). Never retried: a timeout may still have placed it."""
+        if self._signer is None:
+            raise RuntimeError("placing orders requires an API key")
+        url = f"{self._base}/portfolio/events/orders"
+        await self._write_bucket.acquire()
+        resp = await self._client.post(
+            url, json=order.model_dump(), headers=self._signer.headers("POST", url)
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"order rejected ({resp.status_code}): {resp.text[:300]}")
+        return CreateOrderV2Response.model_validate(resp.json())
 
     async def balance(self) -> Balance:
         return Balance.model_validate(await self._get("/portfolio/balance", signed=True))
