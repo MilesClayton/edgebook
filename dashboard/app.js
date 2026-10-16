@@ -7,7 +7,7 @@
 
 const PAGES = { live: "Live Calls", paper: "Paper $500k", research: "Research", calibration: "Calibration", system: "System" };
 const REFRESH_MS = { live: 3000, paper: 5000, system: 5000 };
-let page = "live";
+let page = PAGES[location.hash.slice(1)] ? location.hash.slice(1) : "live";
 let timer = null;
 
 // ---------------------------------------------------------------- data
@@ -32,9 +32,9 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 const fmt = {
-  usd: (x, d = 2) => (x == null ? "–" : `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`),
+  usd: (x, d = 2) => (x == null ? "–" : `${x < 0 ? "−" : ""}$${Math.abs(Number(x)).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`),
   cents: (x) => (x == null ? "–" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}¢`),
-  price: (x) => (x == null ? "–" : `${(x * 100).toFixed(0)}¢`),
+  price: (x) => (x == null ? "–" : Math.abs(x * 100 - Math.round(x * 100)) > 1e-6 ? `${(x * 100).toFixed(1)}¢` : `${Math.round(x * 100)}¢`),
   pct: (x) => (x == null ? "–" : `${(x * 100).toFixed(0)}%`),
   n: (x) => (x == null ? "–" : Number(x).toLocaleString(undefined, { maximumFractionDigits: 0 })),
   age: (ms) => (ms == null ? "–" : ms < 1500 ? `${(ms / 1000).toFixed(1)}s` : ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60000)}m`),
@@ -53,8 +53,8 @@ function table(cols, rows, rowClass = () => "") {
   const head = el("tr", {}, cols.map((c) => el("th", { title: c.tip }, c.label)));
   const body = rows.map((r) => el("tr", { class: rowClass(r) || null }, cols.map((c) => {
     const v = c.get(r);
-    const td = el("td", {}, c.fmt ? c.fmt(v) : v ?? "–");
-    if (c.tone && typeof v === "number") td.className = v > 0 ? "pos" : v < 0 ? "neg" : "";
+    const td = el("td", { class: c.cls ?? null }, c.fmt ? c.fmt(v) : v ?? "–");
+    if (c.tone && typeof v === "number") td.classList.add(v > 0 ? "pos" : v < 0 ? "neg" : "flat");
     return td;
   })));
   return el("div", { class: "panel" }, el("table", {}, el("thead", {}, head), el("tbody", {}, body)));
@@ -65,28 +65,102 @@ function empty(msg) {
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
-const pendingCharts = [];
-function plot(node, traces, layout = {}) {
-  if (!node.isConnected) {
-    pendingCharts.push(() => plot(node, traces, layout));
-    return;
+// ---------------------------------------------------------------- SVG charts
+// Dependency-free charts (no CDN to wait for). Hover any point for its value.
+const SVGNS = "http://www.w3.org/2000/svg";
+function s(tag, attrs = {}, ...kids) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, String(v));
+  for (const k of kids) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return n;
+}
+function niceTicks(lo, hi, n = 4) {
+  if (!(hi > lo)) return [lo];
+  const step0 = (hi - lo) / n;
+  const mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= step0) ?? step0;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+// series: [{name, points: [[x, y], ...], color, dash}]; x is ms (time) unless opts.xNumeric
+function lineChart(series, opts = {}) {
+  const W = 1000, H = opts.height ?? 300, L = 74, R = 16, T = 14, B = 34;
+  const pts = series.flatMap((ser) => ser.points);
+  const wrap = el("div", { class: "panel chart-svg" });
+  if (pts.length < 2) return wrap.appendChild(empty(opts.emptyText ?? "Not enough data to chart yet.")) && wrap;
+  let x0 = opts.xMin ?? Math.min(...pts.map((p) => p[0]));
+  let x1 = opts.xMax ?? Math.max(...pts.map((p) => p[0]));
+  const ys = pts.map((p) => p[1]).concat((opts.hlines ?? []).map((h) => h.y));
+  let y0 = opts.yMin ?? Math.min(...ys), y1 = opts.yMax ?? Math.max(...ys);
+  if (y1 === y0) { y0 -= 1; y1 += 1; }
+  const pad = (y1 - y0) * 0.08;
+  if (opts.yMin == null) y0 -= pad;
+  if (opts.yMax == null) y1 += pad;
+  if (x1 === x0) x1 = x0 + 1;
+  const X = (x) => L + ((x - x0) / (x1 - x0)) * (W - L - R);
+  const Y = (y) => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
+  const yfmt = opts.yfmt ?? ((v) => v.toFixed(2));
+  const xfmt = opts.xfmt ?? ((v) => new Date(v).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "svgchart", role: "img", "aria-label": opts.label ?? "chart" });
+  for (const v of niceTicks(y0, y1)) {
+    svg.append(s("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: "grid" }), s("text", { x: L - 8, y: Y(v) + 4, class: "tick", "text-anchor": "end" }, yfmt(v)));
   }
-  if (!window.Plotly) {
-    node.replaceWith(empty("Charts are still loading; refresh in a moment."));
-    return;
+  const xt = opts.xTicks ?? Array.from({ length: 5 }, (_, i) => x0 + ((x1 - x0) * i) / 4);
+  for (const v of xt) svg.append(s("text", { x: X(v), y: H - 10, class: "tick", "text-anchor": "middle" }, xfmt(v)));
+  if (opts.shade) svg.append(s("rect", { x: X(opts.shade[0]), y: T, width: Math.max(0, X(opts.shade[1]) - X(opts.shade[0])), height: H - T - B, class: "shade" }, s("title", {}, opts.shade[2] ?? "")));
+  for (const h of opts.hlines ?? []) {
+    svg.append(s("line", { x1: L, x2: W - R, y1: Y(h.y), y2: Y(h.y), class: "hline", stroke: h.color ?? "var(--warn)" }, s("title", {}, `${h.label}: ${yfmt(h.y)}`)));
+    svg.append(s("text", { x: W - R - 4, y: Y(h.y) - 6, class: "hlabel", "text-anchor": "end", fill: h.color ?? "var(--warn)" }, `${h.label} ${yfmt(h.y)}`));
   }
-  const axis = { gridcolor: css("--border"), zerolinecolor: css("--border") };
-  Plotly.newPlot(node, traces, {
-    margin: { l: 60, r: 16, t: 34, b: 40 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: css("--text"), size: 12 },
-    xaxis: axis,
-    yaxis: axis,
-    legend: { orientation: "h", y: -0.2 },
-    hovermode: "x unified",
-    ...layout,
-  }, { displayModeBar: false, responsive: true });
+  for (const ser of series) {
+    if (!ser.points.length) continue;
+    const d = ser.points.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
+    svg.append(s("path", { d, class: "series", stroke: ser.color ?? "var(--accent)", "stroke-dasharray": ser.dash ?? null }));
+    const step = Math.max(1, Math.floor(ser.points.length / 120));
+    ser.points.forEach((p, i) => {
+      if (i % step && i !== ser.points.length - 1) return;
+      svg.append(s("circle", { cx: X(p[0]), cy: Y(p[1]), r: i === ser.points.length - 1 ? 5 : 7, class: i === ser.points.length - 1 ? "last" : "hit", fill: ser.color ?? "var(--accent)" }, s("title", {}, `${ser.name} · ${xfmt(p[0])}: ${yfmt(p[1])}`)));
+    });
+  }
+  wrap.append(svg);
+  if (series.length > 1 || opts.legend) {
+    wrap.append(el("div", { class: "legend" }, series.map((ser) => el("span", {}, el("i", { class: "swatch", style: `background:${ser.color ?? "var(--accent)"}` }), ser.name))));
+  }
+  return wrap;
+}
+
+// calibration: points [{p, freq, lo, hi, n}] on a 0..1 square
+function calibrationChart(pts, name) {
+  const W = 1000, H = 420, L = 74, R = 16, T = 14, B = 40;
+  const X = (x) => L + x * (W - L - R);
+  const Y = (y) => T + (1 - y) * (H - T - B);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "svgchart", role: "img", "aria-label": "calibration chart" });
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    svg.append(s("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: "grid" }), s("text", { x: L - 8, y: Y(v) + 4, class: "tick", "text-anchor": "end" }, `${v * 100}%`));
+    svg.append(s("text", { x: X(v), y: H - 16, class: "tick", "text-anchor": "middle" }, `${v * 100}%`));
+  }
+  svg.append(s("line", { x1: X(0), y1: Y(0), x2: X(1), y2: Y(1), class: "hline", stroke: "var(--muted)" }, s("title", {}, "Perfectly honest probabilities")));
+  svg.append(s("text", { x: (W + L) / 2, y: H - 1, class: "tick", "text-anchor": "middle" }, "model said P(UP) →"));
+  svg.append(s("text", { x: 16, y: (H - B) / 2, class: "tick", "text-anchor": "middle", transform: `rotate(-90 16 ${(H - B) / 2})` }, "actually happened →"));
+  for (const q of pts) {
+    svg.append(s("line", { x1: X(q.p), x2: X(q.p), y1: Y(q.lo), y2: Y(q.hi), class: "errbar" }));
+    svg.append(s("circle", { cx: X(q.p), cy: Y(q.freq), r: 7, class: "last", fill: "var(--accent-2)" }, s("title", {}, `${name}: said ${(q.p * 100).toFixed(0)}% → happened ${(q.freq * 100).toFixed(0)}% (n=${q.n}, 95% range ${(q.lo * 100).toFixed(0)}–${(q.hi * 100).toFixed(0)}%)`)));
+  }
+  return el("div", { class: "panel chart-svg" }, svg);
+}
+
+// "KXBTCD-26OCT1607-T81999.99" -> "BTC above $82,000 · 7:00 AM ET"
+function marketName(ticker) {
+  const m = /^(KXBTC15M|KXBTCD|KXBTC)-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})?(?:-T?([\d.]+))?/.exec(ticker ?? "");
+  if (!m) return ticker;
+  const hh = Number(m[5]);
+  const mm = m[6] ?? "00";
+  const time = `${((hh + 11) % 12) + 1}:${mm} ${hh < 12 ? "AM" : "PM"} ET`;
+  if (m[1] === "KXBTC15M") return `15-min BTC up · ${time}`;
+  const k = m[7] ? Number(m[7]) + 0.01 : null;
+  return k ? `BTC above ${fmt.usd(Math.round(k), 0)} · ${time}` : `BTC · ${time}`;
 }
 
 const TIP = {
@@ -163,6 +237,25 @@ function nowPanel(d, held) {
   const ranked = d.calls.filter((c) => c.edge_up != null).sort((a, b) => best(b) - best(a));
   const top = ranked[0];
   const waiting = d.calls.find((c) => c.reason.startsWith("Waiting"));
+  const warmLeft = (d.min_history_s ?? 0) - (d.history_s ?? 0);
+  if (!top && warmLeft > 0) {
+    return el("div", { class: "now" },
+      el("div", { class: "eyebrow" }, "Right now"),
+      el("div", { class: "now-title" }, "Warming up"),
+      el("div", { class: "now-sub", title: "After a restart the engine collects 15 minutes of settlement-index ticks before it trusts its volatility estimate. No calls until then." }, "Collecting live index data before making calls. Ready in ", countdown(Date.now() + warmLeft * 1000, ""), "."),
+      held.size ? el("div", { class: "now-sub" }, `The paper account is holding ${held.size} position(s) to settlement meanwhile.`) : null,
+    );
+  }
+  const blocked = top && best(top) >= d.config.min_edge && top.reason.startsWith("Waiting");
+  if (blocked) {
+    const side = (top.edge_up ?? -9) >= (top.edge_down ?? -9) ? "UP" : "DOWN";
+    return el("div", { class: "now" },
+      el("div", { class: "eyebrow" }, "Right now"),
+      el("div", { class: "now-title" }, `Would be BUY ${side} · ${questionFor(top)[0]}`),
+      el("div", { class: "now-sub" }, `Expected profit ${fmt.cents(best(top))} clears the ${fmt.cents(d.config.min_edge)} bar, but the engine is holding off. ${top.reason} Do not act until this says BUY.`),
+      held.size ? el("div", { class: "now-sub" }, `The paper account is holding ${held.size} position(s); see their HOLD/SELL calls below.`) : null,
+    );
+  }
   const title = waiting && !top ? "Not ready" : "NO TRADE right now";
   const sub = top
     ? `Kalshi's prices are fair. Closest: ${questionFor(top)[0]} at ${fmt.cents(best(top))} expected profit (needs ${fmt.cents(d.config.min_edge)}). It becomes a buy if UP drops to ${fmt.price(top.buy_up_below)} or DOWN to ${fmt.price(top.buy_down_below)}.`
@@ -190,23 +283,25 @@ function fifteenPanel(d, c, held) {
       ["Buy DOWN now costs", fmt.price(c.down_price), TIP.downPrice],
       ["Expected profit UP / DOWN", `${fmt.cents(c.edge_up)} / ${fmt.cents(c.edge_down)}`, TIP.edge],
       ["BTC vs start level", c.index && c.strike ? `${c.index >= c.strike ? "+" : ""}${fmt.usd(c.index - c.strike, 0)} (${c.z_score == null ? "–" : c.z_score.toFixed(1)}σ)` : "–", "How far the settlement index is above (+) or below (−) the level it must beat, and how many typical moves (σ) that is for the time left. Beyond about ±2σ the outcome is rarely in doubt."],
-      ["Spread · depth", `${fmt.price(c.spread)} · ${fmt.n(c.depth_up)} UP / ${fmt.n(c.depth_down)} DOWN`, `${TIP.spread} ${TIP.depth}`],
+      ["Spread · depth", `${c.spread == null ? "–" : `${(c.spread * 100).toFixed(1)}¢`} · ${fmt.n(c.depth_up)} UP / ${fmt.n(c.depth_down)} DOWN`, `${TIP.spread} ${TIP.depth}`],
       ["Volatility", c.sigma_per_min_bps ? `${c.sigma_per_min_bps.toFixed(1)} bp/min` : "warming up", TIP.vol],
     ]),
     h ? el("div", { class: "position", title: "The simulated $500k account's position in this market." }, `Paper holds ${fmt.n(h.contracts)} ${h.side} @ ${fmt.price(h.avg_cost)} · unrealized ${h.unrealized == null ? "–" : fmt.usd(h.unrealized, 0)}`) : null,
     el("div", { class: "gates" }, gates.map(([name, ok]) => el("span", { class: `gate ${ok ? "ok" : "no"}`, title: ok ? `Check passed: ${name}` : `Blocking new entries: ${name}` }, `${ok ? "✓" : "✗"} ${name}`))),
   );
-  const chart = el("div", { class: "panel chart" });
-  const right = el("div", {}, el("div", { class: "eyebrow", title: TIP.index }, "Settlement index this window vs the level UP must beat"), chart);
   const openMs = closeMs(d, c) - 900_000;
   const pts = (d.index_series ?? []).filter((p) => p[0] >= openMs - 60_000);
-  if (pts.length < 3) chart.replaceChildren(empty("Not enough index data for this window yet."));
-  else {
-    plot(chart, [
-      { x: pts.map((p) => new Date(p[0])), y: pts.map((p) => p[1]), type: "scatter", mode: "lines", name: "BTC index", line: { color: css("--accent"), width: 2 }, hovertemplate: "$%{y:,.2f}<extra>index</extra>" },
-      { x: [new Date(openMs), new Date(closeMs(d, c))], y: [c.strike, c.strike], mode: "lines", name: "UP needs ≥ this", line: { dash: "dot", color: css("--warn"), width: 2 }, hovertemplate: "start level $%{y:,.2f}<extra></extra>" },
-    ], { xaxis: { range: [new Date(openMs), new Date(closeMs(d, c))], gridcolor: css("--border") }, yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" }, shapes: [{ type: "rect", xref: "x", yref: "paper", x0: new Date(closeMs(d, c) - 60_000), x1: new Date(closeMs(d, c)), y0: 0, y1: 1, fillcolor: "rgba(255,212,122,.10)", line: { width: 0 } }], annotations: [{ x: new Date(closeMs(d, c) - 30_000), y: 1, yref: "paper", text: "settlement average", showarrow: false, font: { size: 10, color: css("--warn") } }] });
-  }
+  const chart = lineChart([{ name: "BTC index", points: pts }], {
+    hlines: c.strike ? [{ y: c.strike, label: "UP needs ≥" }] : [],
+    xMin: openMs - 60_000,
+    xMax: closeMs(d, c),
+    shade: [closeMs(d, c) - 60_000, closeMs(d, c), "Final 60 seconds: their average decides the result"],
+    yfmt: (v) => fmt.usd(v, 0),
+    height: 560,
+    emptyText: "Index data for this window is still arriving.",
+    label: "Settlement index this window",
+  });
+  const right = el("div", {}, el("div", { class: "eyebrow", title: TIP.index }, "Settlement index this window vs the level UP must beat (shaded = final 60 s that decide it)"), chart);
   return el("div", { class: "two" }, left, right);
 }
 
@@ -222,7 +317,8 @@ function ladder(d, hourly) {
     { label: "DOWN costs", get: (c) => c.down_price, fmt: fmt.price, tip: TIP.downPrice },
     { label: "Buy DOWN ≤", get: (c) => c.buy_down_below, fmt: (v) => (v == null ? "never" : fmt.price(v)), tip: "DOWN is a buy at or below this price." },
     { label: "Best profit", get: (c) => Math.max(c.edge_up ?? -9, c.edge_down ?? -9), fmt: (v) => (v < -1 ? "–" : fmt.cents(v)), tone: true, tip: TIP.edge },
-    { label: "Call", get: (c) => c.action, tip: TIP.action },
+    { label: "Call", get: (c) => (c.reason.startsWith("Waiting") ? "waiting" : c.action), tip: `${TIP.action} "waiting" = a data check is failing; hover the 15-minute card's red checks for which.` },
+    { label: "Why", get: (c) => c.reason, cls: "wrap", tip: "The engine's reason for this call" },
   ], rows, (c) => (c.action !== "NO TRADE" ? "go" : ""));
   return el("div", {}, el("h2", {}, "Hourly markets · BTC above a price at ", close ? new Date(close).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "–", " · ", close ? countdown(close, "") : ""), t);
 }
@@ -237,7 +333,7 @@ function signalLog(d) {
       { label: "Change", get: (e) => `${e.from ?? "–"} → ${e.to}` },
       { label: "Model UP", get: (e) => e.fair_up, fmt: fmt.pct },
       { label: "UP / DOWN cost", get: (e) => `${fmt.price(e.up_price)} / ${fmt.price(e.down_price)}` },
-      { label: "Why", get: (e) => e.reason },
+      { label: "Why", get: (e) => e.reason, cls: "wrap" },
     ], log) : empty("No call changes yet since the engine started. Quiet markets stay on NO TRADE."));
 }
 
@@ -292,13 +388,11 @@ async function paper(root) {
   ));
   const eq = p.equity_series ?? [];
   if (eq.length > 1) {
-    const chart = el("div", { class: "panel chart" });
-    root.append(el("h2", { title: "Account value over time, sampled every 10 seconds." }, "Equity"), chart);
-    plot(chart, [{ x: eq.map((x) => new Date(x[0])), y: eq.map((x) => x[1]), type: "scatter", mode: "lines", name: "equity", line: { color: css("--accent-2"), width: 2 }, hovertemplate: "$%{y:,.0f}<extra></extra>" }], { yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" } });
+    root.append(el("h2", { title: "Account value over time, sampled every 10 seconds." }, "Equity"), lineChart([{ name: "Equity", points: eq, color: "var(--accent-2)" }], { yfmt: (v) => fmt.usd(v, 0), hlines: [{ y: p.starting_cash, label: "start", color: "var(--muted)" }], label: "Paper equity" }));
   }
   root.append(el("h2", {}, "Open positions"));
   root.append(p.holdings.length ? table([
-    { label: "Market", get: (h) => h.ticker },
+    { label: "Market", get: (h) => marketName(h.ticker), tip: "Readable market name (times are US Eastern, Kalshi's time zone)" },
     { label: "Side", get: (h) => h.side, tip: "UP = YES, DOWN = NO" },
     { label: "Contracts", get: (h) => h.contracts, fmt: fmt.n },
     { label: "Avg cost", get: (h) => h.avg_cost, fmt: fmt.price, tip: "Average price paid per contract including fees" },
@@ -311,15 +405,23 @@ async function paper(root) {
   root.append(fills.length ? table([
     { label: "Time", get: (f) => fmt.time(f.ts_ms) },
     { label: "Action", get: (f) => f.action },
-    { label: "Market", get: (f) => f.ticker },
+    { label: "Market", get: (f) => marketName(f.ticker) },
     { label: "Side", get: (f) => (f.side === "yes" ? "UP" : "DOWN") },
     { label: "Contracts", get: (f) => f.contracts, fmt: fmt.n },
     { label: "Price", get: (f) => f.price, fmt: fmt.price, tip: "Average fill price per contract, before fees (settlement = $1 or $0)" },
     { label: "Fees", get: (f) => f.fees, fmt: (v) => fmt.usd(v, 0) },
     { label: "P&L", get: (f) => f.pnl, fmt: (v) => (v == null ? "–" : fmt.usd(v, 0)), tone: true },
-    { label: "Why", get: (f) => f.reason },
+    { label: "Why", get: (f) => f.reason, cls: "wrap" },
   ], fills) : empty("No trades yet. The engine only buys when a market is mispriced by at least the minimum edge; on most minutes it correctly waits."));
 }
+
+const STRATEGY_NAMES = {
+  market: "Kalshi's own price (benchmark)",
+  model_t4: "Our fair-value model",
+  blend: "Model + Kalshi blend",
+  logreg_all: "Logistic regression, all signals",
+  gbm: "Gradient-boosted trees, all signals",
+};
 
 async function research(root) {
   const r = (await load("research"))?.data;
@@ -330,7 +432,7 @@ async function research(root) {
   for (const [s, v] of Object.entries(series)) for (const st of v.strategies) rows.push({ s, name: st.name, all: st.all_oos, hold: st.holdout });
   root.append(table([
     { label: "Market", get: (x) => (x.s === "KXBTC15M" ? "15-minute" : "Hourly") },
-    { label: "Strategy", get: (x) => x.name, tip: "market = Kalshi's own price; model_t4 = our fair value; blend/logreg/gbm = learned combinations" },
+    { label: "Strategy", get: (x) => STRATEGY_NAMES[x.name] ?? x.name, tip: "Each row is one way of estimating the chance of UP, tested only on days it never saw." },
     { label: "Accuracy (Brier)", get: (x) => x.hold.brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)), tip: "Average squared error of the probabilities on the last 7 days. Lower is better." },
     { label: "Kalshi's accuracy", get: (x) => x.hold.market_brier, fmt: (v) => (v == null ? "–" : v.toFixed(4)), tip: "The same score for Kalshi's own prices. To have an edge you must beat this." },
     { label: "Trades", get: (x) => x.hold.taker["0.02"]?.n, fmt: fmt.n, tip: "Trades taken on the last 7 days when expected edge > 2¢" },
@@ -345,16 +447,12 @@ async function calibration(root) {
   if (!hs.length) return root.append(empty("No calibration report published yet."));
   root.append(el("p", { class: "muted" }, "If the model says 70%, UP should win about 70% of the time. Points on the dotted line = honest probabilities. This is checked on past settled markets."));
   const pick = el("select", { title: "Which forecast horizon and model to plot" }, hs.flatMap((h) => Object.keys(h.models).map((m) => el("option", { value: `${h.horizon_min}|${m}` }, `${h.horizon_min} min before close · ${m}`))));
-  const chart = el("div", { class: "panel chart" });
-  root.append(pick, chart);
+  const holder = el("div");
+  root.append(pick, holder);
   const draw = () => {
     const [hm, m] = pick.value.split("|");
     const b = hs.find((h) => String(h.horizon_min) === hm).models[m].buckets.filter((x) => x.n && x.mean_p != null && x.freq != null);
-    if (!b.length) return;
-    plot(chart, [
-      { x: [0, 1], y: [0, 1], mode: "lines", line: { dash: "dot", color: css("--muted") }, name: "perfectly honest", hoverinfo: "skip" },
-      { x: b.map((x) => x.mean_p), y: b.map((x) => x.freq), mode: "markers+lines", name: m, error_y: { type: "data", symmetric: false, array: b.map((x) => x.ci_hi - x.freq), arrayminus: b.map((x) => x.freq - x.ci_lo) }, customdata: b.map((x) => x.n), hovertemplate: "said %{x:.0%} → happened %{y:.0%} (n=%{customdata})<extra></extra>" },
-    ], { hovermode: "closest", xaxis: { title: "model said P(UP)", range: [0, 1], gridcolor: css("--border"), tickformat: ".0%" }, yaxis: { title: "actually happened", range: [0, 1], gridcolor: css("--border"), tickformat: ".0%" } });
+    holder.replaceChildren(b.length ? calibrationChart(b.map((x) => ({ p: x.mean_p, freq: x.freq, lo: x.ci_lo, hi: x.ci_hi, n: x.n })), m) : empty("No buckets with data for this choice."));
   };
   pick.addEventListener("change", draw);
   draw();
@@ -375,7 +473,7 @@ async function system(root) {
   root.append(el("h2", {}, "Exchange feeds"));
   root.append(ex.length ? table([
     { label: "Exchange", get: (x) => x[0] },
-    { label: "Active", get: (x) => (x[1].active ? "yes" : "no") },
+    { label: "Status", get: (x) => (x[1].active ? "live" : x[1].staleness_ms == null ? "not connected" : "idle (no price change)"), tip: "Idle means the exchange simply hasn't changed its best price recently; idle exchanges are left out of the average until they update." },
     { label: "Quote age", get: (x) => x[1].staleness_ms, fmt: fmt.age, tip: "How old that exchange's best bid/offer is" },
     { label: "Latency", get: (x) => x[1].latency_ms, fmt: (v) => (v == null ? "–" : `${v} ms`), tip: "Exchange timestamp to our receive time" },
   ], ex) : empty("Exchange feeds not connected yet."));
@@ -383,7 +481,7 @@ async function system(root) {
 
 const RENDER = { live, paper, research, calibration, system };
 
-async function render() {
+let render = async function () {
   const root = document.getElementById("content");
   document.getElementById("page-title").textContent = PAGES[page];
   const frag = el("div");
@@ -393,7 +491,6 @@ async function render() {
     frag.replaceChildren(empty(`This page hit an error: ${e.message}`));
   }
   root.replaceChildren(...frag.childNodes);
-  for (const job of pendingCharts.splice(0)) job();
   document.getElementById("updated").textContent = `updated ${fmt.time(Date.now())}`;
   clearTimeout(timer);
   if (REFRESH_MS[page]) timer = setTimeout(render, REFRESH_MS[page]);
@@ -412,11 +509,20 @@ async function sideStatus() {
 document.getElementById("nav").addEventListener("click", (e) => {
   const a = e.target.closest("a[data-page]");
   if (!a) return;
-  page = a.dataset.page;
-  for (const x of document.querySelectorAll("#nav a")) x.classList.toggle("active", x === a);
-  render();
+  location.hash = a.dataset.page;
+});
+window.addEventListener("hashchange", () => {
+  if (PAGES[location.hash.slice(1)]) {
+    page = location.hash.slice(1);
+    render();
+  }
 });
 document.getElementById("refresh").addEventListener("click", render);
+const _render = render;
+render = async () => {
+  for (const x of document.querySelectorAll("#nav a")) x.classList.toggle("active", x.dataset.page === page);
+  await _render();
+};
 render();
 // live countdowns tick every second between data refreshes
 setInterval(() => {
