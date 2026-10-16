@@ -22,9 +22,9 @@ from pathlib import Path
 from edgebook.config import KALSHI_URLS, Settings, assert_live_trading_allowed
 from edgebook.core.fees import trade_fee
 from edgebook.core.types import LiquidityRole
-from edgebook.execution.models import ExecutionMode, SessionConfig, SessionStatus
-from edgebook.execution.paper import PaperRiskError
-from edgebook.execution.runner import PaperSession, paper_store
+from edgebook.engine.loop import LiveEngine
+from edgebook.engine.state import LiveState
+from edgebook.feeds.run import MultiExchangeSpot
 from edgebook.history import coinbase
 from edgebook.history import kalshi as kalshi_history
 from edgebook.live.signals import LivePricer, Signal, signals
@@ -53,6 +53,42 @@ def signer_from(settings: Settings) -> KalshiSigner:
     return KalshiSigner.from_pem(settings.kalshi_key_id, pem)
 
 
+def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEngine:
+    """Run the live decision engine + $500k paper account inside the recorder."""
+    state = LiveState()
+    engine = LiveEngine(state, settings.data_dir / "engine" / "paper.json")
+    spot = MultiExchangeSpot()
+
+    async def engine_loop() -> None:
+        n = 0
+        while True:
+            engine.tick()
+            n += 1
+            if n % 2 == 0:
+                dashboard_http.write_kind(store, "live", clean(engine.live_payload()))
+                dashboard_http.write_kind(store, "paper", clean(engine.paper_payload()))
+            if n % 10 == 0:
+                engine.save()
+            await asyncio.sleep(1.0)
+
+    async def settle_loop() -> None:
+        while True:
+            for ticker in sorted(engine.pending_settlement):
+                market = await recorder.rest.market(ticker)
+                if market.result in ("yes", "no"):
+                    engine.settle(ticker, market.result)
+            await asyncio.sleep(20.0)
+
+    async def exchanges_loop() -> None:
+        async for update in spot.updates():
+            state.set_composite(update.snapshot, update.snapshot.timestamp_ms)
+
+    recorder.on_message = state.on_message
+    recorder.on_market = state.set_market
+    recorder.background += [engine_loop, settle_loop, exchanges_loop]
+    return engine
+
+
 async def record(settings: Settings) -> None:
     # Market data is always production, whatever EDGEBOOK_ENV says; no orders here.
     signer = signer_from(settings)
@@ -74,54 +110,12 @@ async def record(settings: Settings) -> None:
             recorder=recorder,
             data_dir=settings.data_dir,
         )
-        paper_session = PaperSession(paper_store(settings.data_dir))
-        last_control_id: str | None = None
-
-        async def apply_paper_control() -> None:
-            nonlocal last_control_id
-            control_path = store / "control.json"
-            if control_path.is_file():
-                try:
-                    command = json.loads(control_path.read_text()).get("data", {})
-                    control_id = command.get("id")
-                    if control_id and control_id != last_control_id:
-                        action = command.get("action")
-                        if action == "start":
-                            config = SessionConfig.model_validate(command.get("config", {}))
-                            if config.mode is not ExecutionMode.PAPER:
-                                raise ValueError("only paper sessions can be controlled here")
-                            try:
-                                paper_session.start(config)
-                            except PaperRiskError as exc:
-                                if str(exc) != "a paper session is already running":
-                                    raise
-                        elif action == "stop":
-                            paper_session.stop()
-                        else:
-                            raise ValueError("unknown paper control action")
-                        last_control_id = control_id
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                    log.exception("invalid dashboard paper control")
-            current = paper_session.store.load()
-            if current is not None and current.status is SessionStatus.RUNNING:
-                await paper_session.step(recorder.rest, builder.pricer, "KXBTC15M")
 
         async def write_snapshot() -> None:
-            await apply_paper_control()
             dashboard_http.write_kind(store, "snapshot", clean(await builder.build()))
-            paper_state = paper_store(settings.data_dir).load()
-            if paper_state is not None:
-                session_store = paper_store(settings.data_dir)
-                dashboard_http.write_kind(
-                    store,
-                    "execution",
-                    {
-                        "state": paper_state.model_dump(mode="json"),
-                        "history": session_store.history(),
-                    },
-                )
 
         recorder.on_minute = write_snapshot
+        attach_engine(settings, recorder, store)
     await recorder.run()
 
 
@@ -333,43 +327,6 @@ async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
     )
 
 
-async def paper(settings: Settings, args: argparse.Namespace) -> None:
-    """Start, stop, inspect, or step the local durable paper session."""
-    session = PaperSession(paper_store(settings.data_dir))
-    if args.paper_action == "start":
-        budget = Decimal(str(args.paper_budget))
-        state = session.start(
-            SessionConfig(
-                mode=ExecutionMode.PAPER,
-                paper_starting_cash=budget,
-                max_open_debit=Decimal(str(args.paper_max_open_debit)),
-                max_order_debit=Decimal(str(args.paper_max_order_debit)),
-                min_edge=Decimal(str(args.min_edge)),
-                max_open_positions=args.paper_max_open_positions,
-            )
-        )
-        print(f"paper session {state.session_id} started with ${state.paper_cash:.2f}")
-        return
-    if args.paper_action == "stop":
-        state = session.stop()
-        print(f"paper session {state.session_id} stopped")
-        return
-    if args.paper_action == "status":
-        current = session.store.load()
-        print("no paper session" if current is None else current.model_dump_json(indent=2))
-        return
-    rest = KalshiRest(KALSHI_URLS["production"])
-    try:
-        state = await session.step(rest, LivePricer(settings.history_dir), args.series)
-    finally:
-        await rest.aclose()
-    print(
-        f"paper {state.status}: cash ${state.paper_cash:.2f}, "
-        f"open {len(state.positions)}, settled {len(state.settled)}, "
-        f"realized P&L ${state.paper_realized_pnl:+.2f}"
-    )
-
-
 COMMANDS = {"record": record, "balance": balance, "markets": markets}
 PUBLISH = False  # set by --publish
 DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate, "research": research}
@@ -377,21 +334,12 @@ DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate, "research": resear
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="edgebook")
-    parser.add_argument(
-        "command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "paper", "trade-once"])
-    )
+    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once"]))
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--series", default="KXBTC15M")
     parser.add_argument("--execute", action="store_true", help="actually place the order")
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--confirm-real-money", action="store_true")
-    parser.add_argument(
-        "--paper-action", choices=("start", "stop", "status", "step"), default="status"
-    )
-    parser.add_argument("--paper-budget", type=float, default=25.0)
-    parser.add_argument("--paper-max-open-debit", type=float, default=5.0)
-    parser.add_argument("--paper-max-order-debit", type=float, default=1.0)
-    parser.add_argument("--paper-max-open-positions", type=int, default=1)
     parser.add_argument(
         "--session-cap", type=float, default=None, help="maximum cumulative order debit"
     )
@@ -408,8 +356,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = Settings()
         if args.command == "trade-once":
             asyncio.run(trade_once(settings, args))
-        elif args.command == "paper":
-            asyncio.run(paper(settings, args))
         elif args.command in DAY_COMMANDS:
             asyncio.run(DAY_COMMANDS[args.command](settings, args.days))
         else:

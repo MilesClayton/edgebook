@@ -20,7 +20,7 @@ import httpx
 from edgebook.config import Settings
 
 log = logging.getLogger(__name__)
-KINDS = ("snapshot", "research", "calibration", "trades", "execution", "control")
+KINDS = ("snapshot", "research", "calibration", "trades", "live", "paper")
 
 
 def clean(x: Any) -> Any:
