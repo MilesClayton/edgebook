@@ -49,7 +49,7 @@ One-time setup:
 ```bash
 fly auth login
 fly apps create edgebook-recorder
-fly volumes create recorder_data --app edgebook-recorder --region iad --size 10
+fly volumes create recorder_data --app edgebook-recorder --region iad --size 40   # ~1.5GB/day; extend with `fly volumes extend`
 fly secrets set --app edgebook-recorder EDGEBOOK_KALSHI_KEY_ID=<prod key id> \
   EDGEBOOK_KALSHI_PRIVATE_KEY="$(cat ~/path/to/kalshi-prod.pem)"
 fly tokens create deploy --app edgebook-recorder   # store as FLY_API_TOKEN in the GitHub "paper" environment
