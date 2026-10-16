@@ -1,0 +1,6 @@
+{
+  "name": "edgebook-dashboard",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "22.x" }
+}

@@ -39,6 +39,7 @@ class Recorder:
         index_ids: Sequence[str],
         discover_every_s: float = 60.0,
         settle_every_s: float = 300.0,
+        on_minute: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.rest = rest
         self.ws = ws
@@ -47,6 +48,7 @@ class Recorder:
         self.index_ids = tuple(index_ids)
         self.discover_every_s = discover_every_s
         self.settle_every_s = settle_every_s
+        self.on_minute = on_minute  # e.g. publish a dashboard snapshot; failures are logged
         self.subscribed: set[str] = set()
         self.settled: set[str] = set()
         self.messages = 0
@@ -112,6 +114,8 @@ class Recorder:
                 tg.create_task(self._every(self.settle_every_s, "settle", self.settle_once))
                 tg.create_task(self._every(15.0, "housekeeping", self._housekeeping))
                 tg.create_task(self.stream())
+                if self.on_minute is not None:
+                    tg.create_task(self._every(60.0, "on_minute", self.on_minute))
         finally:
             self.sink.flush_all()
             await self.ws.close()
