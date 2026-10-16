@@ -7,9 +7,11 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "cryptography>=50.0.2",
     "httpx>=0.28.1",
+    "numpy>=2.5.4",
     "pyarrow>=26.0.0",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "scipy>=1.18.1",
     "websockets>=17.2",
 ]
 
@@ -24,6 +26,7 @@ dev = [
     "pytest-cov>=6.0",
     "pyyaml>=6.0.3",
     "ruff>=0.8",
+    "scipy-stubs>=1.18.1.1",
     "types-pyyaml>=6.0.12.20260906",
 ]
 

@@ -14,5 +14,7 @@ build/
 .hypothesis/
 .claude/worktrees/
 viability.json
-data/
+/data/
 *.pem
+/history/
+/reports/

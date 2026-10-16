@@ -55,6 +55,25 @@ class Balance(_Wire):
     balance: int
 
 
+class BidAskDistribution(_Wire):
+    close_dollars: Decimal
+
+
+class MarketCandlestick(_Wire):
+    end_period_ts: int  # inclusive end of the period, Unix seconds
+    yes_bid: BidAskDistribution
+    yes_ask: BidAskDistribution
+
+
+class MarketCandlesticksResponse(_Wire):
+    market_ticker: str
+    candlesticks: list[MarketCandlestick]
+
+
+class BatchGetMarketCandlesticksResponse(_Wire):
+    markets: list[MarketCandlesticksResponse]
+
+
 # --- WebSocket --------------------------------------------------------------
 
 Level = tuple[Decimal, Decimal]  # (price dollars, contract count)
