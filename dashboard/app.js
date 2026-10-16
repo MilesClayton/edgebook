@@ -49,9 +49,9 @@ function kv(rows) {
   for (const [label, value, tip, tone] of rows) dl.append(el("dt", { title: tip }, label), el("dd", { class: tone ?? "" }, value));
   return dl;
 }
-function table(cols, rows) {
+function table(cols, rows, rowClass = () => "") {
   const head = el("tr", {}, cols.map((c) => el("th", { title: c.tip }, c.label)));
-  const body = rows.map((r) => el("tr", {}, cols.map((c) => {
+  const body = rows.map((r) => el("tr", { class: rowClass(r) || null }, cols.map((c) => {
     const v = c.get(r);
     const td = el("td", {}, c.fmt ? c.fmt(v) : v ?? "–");
     if (c.tone && typeof v === "number") td.className = v > 0 ? "pos" : v < 0 ? "neg" : "";
@@ -65,7 +65,12 @@ function empty(msg) {
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
+const pendingCharts = [];
 function plot(node, traces, layout = {}) {
+  if (!node.isConnected) {
+    pendingCharts.push(() => plot(node, traces, layout));
+    return;
+  }
   if (!window.Plotly) {
     node.replaceWith(empty("Charts are still loading; refresh in a moment."));
     return;
@@ -109,55 +114,167 @@ function badgeFor(action) {
 }
 
 // ---------------------------------------------------------------- pages
+function closeMs(d, c) {
+  return d.updated_ms + c.seconds_left * 1000;
+}
+function countdown(ms, cls = "countdown") {
+  return el("span", { class: cls, "data-close": String(ms), title: TIP.left }, fmt.left((ms - Date.now()) / 1000));
+}
+function probBar(c) {
+  const p = c.fair_up;
+  if (p == null) return el("div", { class: "muted" }, "Model probability not available yet.");
+  const up = el("div", { class: "up", style: `width:${(p * 100).toFixed(1)}%` }, p >= 0.12 ? `UP ${fmt.pct(p)}` : "");
+  const down = el("div", { class: "down" }, 1 - p >= 0.12 ? `DOWN ${fmt.pct(1 - p)}` : "");
+  const bar = el("div", { class: "probbar", title: "Coloured bar = the model's probability. White tick = what Kalshi's prices imply (mid of bid and ask). A gap between them is where an edge would come from." }, up, down);
+  if (c.market_up != null) bar.append(el("div", { class: "mkt", style: `left:calc(${(c.market_up * 100).toFixed(1)}% - 1px)` }));
+  return el("div", {}, bar, el("div", { class: "legend" }, el("span", {}, `Model: UP ${fmt.pct(p)}`), el("span", {}, `Kalshi prices imply: UP ${fmt.pct(c.market_up)}`)));
+}
+function planBox(c) {
+  const cell = (k, v, tip) => el("div", { title: tip }, el("div", { class: "k" }, k), el("div", { class: "v" }, v));
+  return el("div", { class: "plan" },
+    cell("Buy UP at or below", c.buy_up_below == null ? "never" : fmt.price(c.buy_up_below), "The highest price for UP that still leaves the minimum expected profit after Kalshi's fee. Above this, UP is not a buy."),
+    cell("Buy DOWN at or below", c.buy_down_below == null ? "never" : fmt.price(c.buy_down_below), "The highest price for DOWN that still leaves the minimum expected profit after fees."),
+    cell("Own UP? Sell when bid ≥", c.sell_up_at == null ? "hold" : fmt.price(c.sell_up_at), "If someone will pay this much for your UP contract, selling beats holding to the end (after the fee). Below it, holding is worth more on average."),
+    cell("Own DOWN? Sell when bid ≥", c.sell_down_at == null ? "hold" : fmt.price(c.sell_down_at), "Same rule for a DOWN contract."),
+  );
+}
+function strikeLabel(c) {
+  return c.series === "KXBTC15M" ? `15-min · start ${fmt.usd(c.strike)}` : fmt.usd(c.strike, 0);
+}
+
+function nowPanel(d, held) {
+  const buys = d.calls.filter((c) => c.action.startsWith("BUY"));
+  const exits = d.calls.filter((c) => c.action === "SELL");
+  const best = (c) => Math.max(c.edge_up ?? -9, c.edge_down ?? -9);
+  if (buys.length || exits.length) {
+    const c = exits[0] ?? buys.sort((a, b) => best(b) - best(a))[0];
+    const [q] = questionFor(c);
+    const side = c.action === "BUY UP" || (c.action === "SELL" && c.position?.side === "yes") ? "UP" : "DOWN";
+    const limit = side === "UP" ? c.buy_up_below : c.buy_down_below;
+    const sellAt = side === "UP" ? c.sell_up_at : c.sell_down_at;
+    return el("div", { class: "now go" },
+      el("div", { class: "eyebrow" }, "Right now"),
+      el("div", { class: "now-title" }, `${c.action} · ${q}`),
+      el("div", {}, c.reason),
+      el("div", { class: "now-sub" }, c.action === "SELL" ? `Sell at ${fmt.price(side === "UP" ? c.up_sell : c.down_sell)} or better.` : `Pay no more than ${fmt.price(limit)}. Afterwards: sell if the bid reaches ${fmt.price(sellAt)}, otherwise hold to the result. Closes in `, c.action === "SELL" ? "" : countdown(closeMs(d, c), "")),
+      buys.length + exits.length > 1 ? el("div", { class: "now-sub" }, `${buys.length + exits.length - 1} more market(s) also have a call; see below.`) : null,
+    );
+  }
+  const ranked = d.calls.filter((c) => c.edge_up != null).sort((a, b) => best(b) - best(a));
+  const top = ranked[0];
+  const waiting = d.calls.find((c) => c.reason.startsWith("Waiting"));
+  const title = waiting && !top ? "Not ready" : "NO TRADE right now";
+  const sub = top
+    ? `Kalshi's prices are fair. Closest: ${questionFor(top)[0]} at ${fmt.cents(best(top))} expected profit (needs ${fmt.cents(d.config.min_edge)}). It becomes a buy if UP drops to ${fmt.price(top.buy_up_below)} or DOWN to ${fmt.price(top.buy_down_below)}.`
+    : waiting ? waiting.reason : "No open markets.";
+  return el("div", { class: "now" },
+    el("div", { class: "eyebrow" }, "Right now"),
+    el("div", { class: "now-title" }, title),
+    el("div", { class: "now-sub" }, sub),
+    held.size ? el("div", { class: "now-sub" }, `The paper account is holding ${held.size} position(s); see their HOLD/SELL calls below.`) : null,
+  );
+}
+
+function fifteenPanel(d, c, held) {
+  const [q, sub] = questionFor(c);
+  const h = held.get(c.ticker);
+  const gates = Object.entries(c.gates ?? {});
+  const left = el("div", { class: "call" },
+    el("div", { class: "call-head" }, el("div", {}, el("div", { class: "call-q" }, q), el("div", { class: "call-sub" }, sub)), countdown(closeMs(d, c))),
+    badgeFor(c.action),
+    el("div", { class: "reason" }, c.reason),
+    probBar(c),
+    planBox(c),
+    kv([
+      ["Buy UP now costs", fmt.price(c.up_price), TIP.upPrice],
+      ["Buy DOWN now costs", fmt.price(c.down_price), TIP.downPrice],
+      ["Expected profit UP / DOWN", `${fmt.cents(c.edge_up)} / ${fmt.cents(c.edge_down)}`, TIP.edge],
+      ["BTC vs start level", c.index && c.strike ? `${c.index >= c.strike ? "+" : ""}${fmt.usd(c.index - c.strike, 0)} (${c.z_score == null ? "–" : c.z_score.toFixed(1)}σ)` : "–", "How far the settlement index is above (+) or below (−) the level it must beat, and how many typical moves (σ) that is for the time left. Beyond about ±2σ the outcome is rarely in doubt."],
+      ["Spread · depth", `${fmt.price(c.spread)} · ${fmt.n(c.depth_up)} UP / ${fmt.n(c.depth_down)} DOWN`, `${TIP.spread} ${TIP.depth}`],
+      ["Volatility", c.sigma_per_min_bps ? `${c.sigma_per_min_bps.toFixed(1)} bp/min` : "warming up", TIP.vol],
+    ]),
+    h ? el("div", { class: "position", title: "The simulated $500k account's position in this market." }, `Paper holds ${fmt.n(h.contracts)} ${h.side} @ ${fmt.price(h.avg_cost)} · unrealized ${h.unrealized == null ? "–" : fmt.usd(h.unrealized, 0)}`) : null,
+    el("div", { class: "gates" }, gates.map(([name, ok]) => el("span", { class: `gate ${ok ? "ok" : "no"}`, title: ok ? `Check passed: ${name}` : `Blocking new entries: ${name}` }, `${ok ? "✓" : "✗"} ${name}`))),
+  );
+  const chart = el("div", { class: "panel chart" });
+  const right = el("div", {}, el("div", { class: "eyebrow", title: TIP.index }, "Settlement index this window vs the level UP must beat"), chart);
+  const openMs = closeMs(d, c) - 900_000;
+  const pts = (d.index_series ?? []).filter((p) => p[0] >= openMs - 60_000);
+  if (pts.length < 3) chart.replaceChildren(empty("Not enough index data for this window yet."));
+  else {
+    plot(chart, [
+      { x: pts.map((p) => new Date(p[0])), y: pts.map((p) => p[1]), type: "scatter", mode: "lines", name: "BTC index", line: { color: css("--accent"), width: 2 }, hovertemplate: "$%{y:,.2f}<extra>index</extra>" },
+      { x: [new Date(openMs), new Date(closeMs(d, c))], y: [c.strike, c.strike], mode: "lines", name: "UP needs ≥ this", line: { dash: "dot", color: css("--warn"), width: 2 }, hovertemplate: "start level $%{y:,.2f}<extra></extra>" },
+    ], { xaxis: { range: [new Date(openMs), new Date(closeMs(d, c))], gridcolor: css("--border") }, yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" }, shapes: [{ type: "rect", xref: "x", yref: "paper", x0: new Date(closeMs(d, c) - 60_000), x1: new Date(closeMs(d, c)), y0: 0, y1: 1, fillcolor: "rgba(255,212,122,.10)", line: { width: 0 } }], annotations: [{ x: new Date(closeMs(d, c) - 30_000), y: 1, yref: "paper", text: "settlement average", showarrow: false, font: { size: 10, color: css("--warn") } }] });
+  }
+  return el("div", { class: "two" }, left, right);
+}
+
+function ladder(d, hourly) {
+  const close = hourly.length ? closeMs(d, hourly[0]) : null;
+  const rows = hourly.slice().sort((a, b) => b.strike - a.strike);
+  const t = table([
+    { label: "BTC above", get: (c) => fmt.usd(c.strike, 0), tip: "The strike: UP wins if the 60-second settlement average at the close is above this." },
+    { label: "Model UP", get: (c) => c.fair_up, fmt: fmt.pct, tip: TIP.fair },
+    { label: "Kalshi UP", get: (c) => c.market_up, fmt: fmt.pct, tip: "Probability implied by Kalshi's prices (mid of best bid and ask)." },
+    { label: "UP costs", get: (c) => c.up_price, fmt: fmt.price, tip: TIP.upPrice },
+    { label: "Buy UP ≤", get: (c) => c.buy_up_below, fmt: (v) => (v == null ? "never" : fmt.price(v)), tip: "UP is a buy at or below this price." },
+    { label: "DOWN costs", get: (c) => c.down_price, fmt: fmt.price, tip: TIP.downPrice },
+    { label: "Buy DOWN ≤", get: (c) => c.buy_down_below, fmt: (v) => (v == null ? "never" : fmt.price(v)), tip: "DOWN is a buy at or below this price." },
+    { label: "Best profit", get: (c) => Math.max(c.edge_up ?? -9, c.edge_down ?? -9), fmt: (v) => (v < -1 ? "–" : fmt.cents(v)), tone: true, tip: TIP.edge },
+    { label: "Call", get: (c) => c.action, tip: TIP.action },
+  ], rows, (c) => (c.action !== "NO TRADE" ? "go" : ""));
+  return el("div", {}, el("h2", {}, "Hourly markets · BTC above a price at ", close ? new Date(close).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "–", " · ", close ? countdown(close, "") : ""), t);
+}
+
+function signalLog(d) {
+  const log = (d.signal_log ?? []).slice().reverse();
+  return el("div", {},
+    el("h2", { title: "Every time the engine's call for a market changed. Use it to see when buys appeared and how long they lasted." }, "Signal log"),
+    log.length ? table([
+      { label: "Time", get: (e) => fmt.time(e.ts_ms) },
+      { label: "Market", get: (e) => (e.series === "KXBTC15M" ? `15-min ${fmt.usd(e.strike, 0)}` : `above ${fmt.usd(e.strike, 0)}`) },
+      { label: "Change", get: (e) => `${e.from ?? "–"} → ${e.to}` },
+      { label: "Model UP", get: (e) => e.fair_up, fmt: fmt.pct },
+      { label: "UP / DOWN cost", get: (e) => `${fmt.price(e.up_price)} / ${fmt.price(e.down_price)}` },
+      { label: "Why", get: (e) => e.reason },
+    ], log) : empty("No call changes yet since the engine started. Quiet markets stay on NO TRADE."));
+}
+
+function helpBox(d) {
+  return el("details", { class: "help" },
+    el("summary", {}, "How to use this page"),
+    el("ul", {},
+      el("li", {}, "Start at “Right now”. It names the single best action, or says why there is none."),
+      el("li", {}, `BUY UP / BUY DOWN appears only when the model's expected profit is at least ${fmt.cents(d.config.min_edge)} per contract after Kalshi's fee and every data check is green. Pay no more than the “Buy … at or below” price.`),
+      el("li", {}, "After buying: sell if the bid reaches the “Sell when bid ≥” price (selling then beats holding). Otherwise hold to the result. The paper account follows exactly these rules."),
+      el("li", {}, "Gray NO TRADE means Kalshi's price is fair or a check failed (stale data, wide spread, too close to the close). That is the right answer most of the time."),
+      el("li", {}, "Hover any label or number for what it means. Nothing here is guaranteed; past tests found no reliable edge, so watch the Paper $500k results before trusting it with real money."),
+    ));
+}
+
 async function live(root) {
   const [lv, paper] = await Promise.all([load("live"), load("paper")]);
   const d = lv?.data;
   if (!d) return root.append(empty("No live data yet. The engine on Fly publishes every 2 seconds once it starts."));
   const ageNow = Date.now() - d.updated_ms;
   const stale = ageNow > 15_000;
-  if (stale) root.append(el("div", { class: "banner" }, `Live feed is ${fmt.age(ageNow)} old. The engine may be restarting; calls below are NOT current.`));
-  root.append(el("div", { class: "cards" },
-    card("BTC index (settlement price)", fmt.usd(d.index), `updated ${fmt.age(d.index_age_ms)} before publish`, TIP.index),
-    card("Exchanges (Coinbase/Kraken/Bitstamp)", fmt.usd(d.exchanges_mid), d.index && d.exchanges_mid ? `${((d.exchanges_mid / d.index - 1) * 1e4).toFixed(1)} bps vs index` : "not connected", "Median best bid/offer across exchanges. If it runs well ahead of the index, the engine waits instead of buying on stale prices."),
-    card("Data age", fmt.age(ageNow), `Kalshi ${fmt.age(d.ws_age_ms)} · index ${fmt.age(d.index_age_ms)}`, "How old these numbers are as you look at them. Calls are blocked automatically if the index is over 3 s old.", stale ? "bad" : "good"),
-    card("Rule for buying", `≥ ${fmt.cents(d.config.min_edge)} edge`, `spread ≤ ${fmt.price(d.config.max_spread)}, ≥ ${Math.round(d.config.min_secs_left)}s left`, "The engine only says BUY when the expected profit after fees is at least this much per contract and all data checks pass."),
-  ));
-
   const held = new Map((paper?.data?.holdings ?? []).map((h) => [h.ticker, h]));
-  const grid = el("div", { class: "calls" });
-  for (const c of d.calls) {
-    const [q, sub] = questionFor(c);
-    const h = held.get(c.ticker);
-    const gates = Object.entries(c.gates ?? {});
-    grid.append(el("div", { class: "call" },
-      el("div", { class: "call-head" }, el("div", {}, el("div", { class: "call-q" }, q), el("div", { class: "call-sub" }, sub)), el("div", { class: "call-sub", title: TIP.left }, fmt.left(c.seconds_left))),
-      badgeFor(c.action),
-      el("div", { class: "reason" }, c.reason),
-      kv([
-        ["Model chance UP", fmt.pct(c.fair_up), TIP.fair],
-        ["Buy UP costs", fmt.price(c.up_price), TIP.upPrice],
-        ["Buy DOWN costs", fmt.price(c.down_price), TIP.downPrice],
-        ["Edge UP", fmt.cents(c.edge_up), TIP.edge, c.edge_up > 0 ? "pos" : "neg"],
-        ["Edge DOWN", fmt.cents(c.edge_down), TIP.edge, c.edge_down > 0 ? "pos" : "neg"],
-        ["Index vs strike", c.index && c.strike ? `${fmt.usd(c.index - c.strike, 0)}` : "–", `${TIP.index} Positive = above the strike.`],
-        ["Spread / depth", `${fmt.price(c.spread)} / ${fmt.n(c.depth_up)}`, `${TIP.spread} ${TIP.depth}`],
-        ["Volatility", c.sigma_per_min_bps ? `${c.sigma_per_min_bps.toFixed(1)} bp/min` : "warming up", TIP.vol],
-      ]),
-      h ? el("div", { class: "position", title: "The simulated $500k account's position in this market." }, `Paper: ${fmt.n(h.contracts)} ${h.side} @ ${fmt.price(h.avg_cost)} avg · worth ${fmt.usd(h.mark == null ? null : h.mark * h.contracts, 0)} now (${h.unrealized == null ? "–" : fmt.usd(h.unrealized, 0)})`) : null,
-      el("div", { class: "gates" }, gates.map(([name, ok]) => el("span", { class: `gate ${ok ? "ok" : "no"}`, title: ok ? `Check passed: ${name}` : `Blocking new entries: ${name}` }, `${ok ? "✓" : "✗"} ${name}`))),
-    ));
-  }
-  root.append(el("h2", {}, "Markets"), d.calls.length ? grid : empty("No open BTC markets right now."));
-
-  const series = d.index_series ?? [];
-  if (series.length > 5) {
-    const chart = el("div", { class: "panel chart" });
-    root.append(el("h2", { title: TIP.index }, "Settlement index, last 15 minutes"), chart);
-    const k = d.calls.find((c) => c.series === "KXBTC15M")?.strike;
-    const traces = [{ x: series.map((p) => new Date(p[0])), y: series.map((p) => p[1]), type: "scatter", mode: "lines", name: "BRTI", line: { color: css("--accent"), width: 2 }, hovertemplate: "$%{y:,.2f}<extra>BRTI</extra>" }];
-    if (k) traces.push({ x: [new Date(series[0][0]), new Date(series.at(-1)[0])], y: [k, k], mode: "lines", name: "15-min strike", line: { dash: "dot", color: css("--warn") }, hovertemplate: "strike $%{y:,.2f}<extra></extra>" });
-    plot(chart, traces, { yaxis: { gridcolor: css("--border"), tickprefix: "$", tickformat: ",.0f" } });
-  }
+  const gap = d.index && d.exchanges_mid ? (d.exchanges_mid / d.index - 1) * 1e4 : null;
+  root.append(el("div", { class: "statusbar" },
+    el("span", { class: `pill ${stale ? "bad" : "good"}`, title: "How old this page's data is right now. Refreshes every 3 seconds." }, stale ? `STALE ${fmt.age(ageNow)}` : `LIVE · ${fmt.age(ageNow)}`),
+    el("span", { class: `pill ${d.index_age_ms <= 3000 ? "good" : "bad"}`, title: TIP.index }, `BTC index ${fmt.usd(d.index)} · ${fmt.age(d.index_age_ms)}`),
+    el("span", { class: `pill ${d.ws_age_ms <= 10_000 ? "good" : "bad"}`, title: "Time since the last message from Kalshi's live order-book stream." }, `Kalshi ${fmt.age(d.ws_age_ms)}`),
+    el("span", { class: `pill ${gap == null ? "warn" : Math.abs(gap) <= d.config.max_spot_index_gap_bps ? "good" : "bad"}`, title: "Coinbase/Kraken/Bitstamp vs the settlement index. A big gap means spot is moving faster than the index: the engine waits so you don't buy on a lag." }, gap == null ? "exchanges –" : `exchanges ${gap >= 0 ? "+" : ""}${gap.toFixed(1)} bp`),
+  ));
+  if (stale) root.append(el("div", { class: "banner" }, `Live feed is ${fmt.age(ageNow)} old. The engine may be restarting; calls are NOT current.`));
+  root.append(nowPanel(d, held));
+  const fifteen = d.calls.filter((c) => c.series === "KXBTC15M");
+  const hourly = d.calls.filter((c) => c.series !== "KXBTC15M");
+  root.append(el("h2", {}, "15-minute market"));
+  root.append(fifteen.length ? fifteenPanel(d, fifteen[0], held) : empty("No 15-minute market is open right now; the next one opens on the quarter hour."));
+  root.append(hourly.length ? ladder(d, hourly) : empty("No hourly markets within the next hour."));
+  root.append(signalLog(d), helpBox(d));
 }
 
 async function paper(root) {
@@ -276,6 +393,7 @@ async function render() {
     frag.replaceChildren(empty(`This page hit an error: ${e.message}`));
   }
   root.replaceChildren(...frag.childNodes);
+  for (const job of pendingCharts.splice(0)) job();
   document.getElementById("updated").textContent = `updated ${fmt.time(Date.now())}`;
   clearTimeout(timer);
   if (REFRESH_MS[page]) timer = setTimeout(render, REFRESH_MS[page]);
@@ -300,3 +418,7 @@ document.getElementById("nav").addEventListener("click", (e) => {
 });
 document.getElementById("refresh").addEventListener("click", render);
 render();
+// live countdowns tick every second between data refreshes
+setInterval(() => {
+  for (const n of document.querySelectorAll("[data-close]")) n.textContent = fmt.left((Number(n.dataset.close) - Date.now()) / 1000);
+}, 1000);

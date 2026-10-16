@@ -69,3 +69,27 @@ footer { margin-top: 34px; font-size: 12px; } footer a { color: var(--accent-2);
 .position { margin-top: 10px; padding: 8px 10px; border-radius: 9px; background: #13233a; font-size: 13px; }
 .card[title], .kv dt[title], .gate[title], th[title] { cursor: help; }
 .banner { padding: 12px 14px; border-radius: 12px; border: 1px solid #5c4a1c; background: var(--warn-bg); color: var(--warn); margin-bottom: 14px; }
+
+/* ---- decision layout ---------------------------------------------------- */
+.statusbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.now { padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(130deg, rgba(21,36,59,.97), rgba(11,23,40,.92)); margin-bottom: 14px; }
+.now.go { border-color: var(--good); box-shadow: 0 0 0 1px var(--good) inset; }
+.now-title { font-size: 26px; font-weight: 800; letter-spacing: -.02em; margin: 4px 0 6px; }
+.now-sub { color: var(--muted); }
+.two { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1.2fr); gap: 12px; }
+.plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.plan > div { padding: 10px; border-radius: 10px; background: #13233a; }
+.plan .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.plan .v { font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.probbar { position: relative; height: 26px; border-radius: 8px; overflow: hidden; display: flex; margin: 8px 0 4px; background: #1a2a42; }
+.probbar .up { background: var(--good); color: #031a18; font-weight: 750; font-size: 12px; display: flex; align-items: center; padding-left: 8px; }
+.probbar .down { background: var(--bad); color: #2a0612; font-weight: 750; font-size: 12px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; flex: 1; }
+.probbar .mkt { position: absolute; top: -3px; bottom: -3px; width: 3px; background: #fff; box-shadow: 0 0 0 1px #000; }
+.legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.countdown { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+tr.go td { background: rgba(114,241,197,.10); }
+tr.go td:first-child { box-shadow: inset 3px 0 0 var(--good); }
+details.help { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(16,27,46,.88); }
+details.help summary { cursor: pointer; font-weight: 700; }
+details.help li { margin: 4px 0; }
+@media (max-width: 900px) { .two { grid-template-columns: 1fr; } .plan { grid-template-columns: 1fr 1fr; } }
