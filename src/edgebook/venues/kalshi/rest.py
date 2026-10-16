@@ -15,7 +15,13 @@ import httpx
 
 from edgebook.core.types import Market
 from edgebook.venues.kalshi.auth import KalshiSigner
-from edgebook.venues.kalshi.models import Balance, MarketsPage, RestMarket
+from edgebook.venues.kalshi.models import (
+    Balance,
+    BatchGetMarketCandlesticksResponse,
+    MarketCandlestick,
+    MarketsPage,
+    RestMarket,
+)
 from edgebook.venues.kalshi.ratelimit import TokenBucket
 
 # Kalshi series -> underlying asset. Extending to ETH/SOL is a config entry.
@@ -28,6 +34,7 @@ SERIES_UNDERLYING: Mapping[str, str] = {
     "KXETH15M": "ETH",
 }
 BASIC_READ_TOKENS_PER_S = 200
+CANDLE_BATCH = 100  # Kalshi max tickers per batch candlestick request
 MAX_RETRIES = 5
 
 
@@ -95,6 +102,25 @@ class KalshiRest:
     async def open_markets(self, series: str) -> list[Market]:
         underlying = underlying_for(series)
         return [m.to_core(underlying) for m in await self.markets(series)]
+
+    async def candlesticks(
+        self, tickers: list[str], start: datetime, end: datetime, period_min: int = 1
+    ) -> dict[str, list[MarketCandlestick]]:
+        """Bid/ask candles per ticker (public). Batches of 100 tickers."""
+        out: dict[str, list[MarketCandlestick]] = {}
+        for i in range(0, len(tickers), CANDLE_BATCH):
+            params: dict[str, str | int] = {
+                "market_tickers": ",".join(tickers[i : i + CANDLE_BATCH]),
+                "start_ts": int(start.timestamp()),
+                "end_ts": int(end.timestamp()),
+                "period_interval": period_min,
+            }
+            page = BatchGetMarketCandlesticksResponse.model_validate(
+                await self._get("/markets/candlesticks", params)
+            )
+            for m in page.markets:
+                out[m.market_ticker] = m.candlesticks
+        return out
 
     async def balance(self) -> Balance:
         return Balance.model_validate(await self._get("/portfolio/balance", signed=True))

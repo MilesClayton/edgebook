@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -8,6 +9,10 @@ from pydantic import SecretStr
 
 from edgebook.app import cli
 from edgebook.config import Settings
+from edgebook.history import coinbase
+from edgebook.history import kalshi as kalshi_history
+from edgebook.research import calibrate as calib
+from edgebook.research.calibrate import CalibrationReport
 from edgebook.venues.kalshi.models import Balance, RestMarket
 from tests.conftest import market
 
@@ -86,3 +91,42 @@ def test_record_wires_production_market_data(monkeypatch: pytest.MonkeyPatch) ->
     assert cli.main(["record"]) == 0
     assert built["series"] == ("KXBTCD", "KXBTC", "KXBTC15M")
     assert "demo" not in built["ws"]._url
+
+
+def test_backfill_and_calibrate_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def cb_backfill(directory: Path, days: int) -> int:
+        calls.append(("coinbase", days))
+        return 1
+
+    async def k_backfill(rest: Any, directory: Path, series: str, days: int) -> int:
+        calls.append((series, days))
+        return 2
+
+    monkeypatch.setattr(coinbase, "backfill", cb_backfill)
+    monkeypatch.setattr(kalshi_history, "backfill", k_backfill)
+    monkeypatch.setenv("EDGEBOOK_HISTORY_DIR", str(tmp_path / "h"))
+    monkeypatch.setenv("EDGEBOOK_REPORTS_DIR", str(tmp_path / "r"))
+    assert cli.main(["backfill", "--days", "3"]) == 0
+    assert calls == [("coinbase", 3 + calib.WARMUP_DAYS + 1), ("KXBTCD", 3)]
+
+    monkeypatch.setattr(
+        coinbase, "load", lambda d: (np.array([0], dtype=np.int64), np.array([1.0]))
+    )
+    monkeypatch.setattr(kalshi_history, "load", lambda d, s: [{"close_ts": 0}, {"close_ts": 2**40}])
+    seen: list[int] = []
+
+    def fake_run(ts: Any, close: Any, rows: list[dict[str, Any]], **kw: Any) -> CalibrationReport:
+        seen.append(len(rows))
+        kw["progress"](0, 1)
+        return CalibrationReport(n_rows_in=len(rows), n_scored=0, skipped={}, basis_bps={})
+
+    monkeypatch.setattr(calib, "run", fake_run)
+    monkeypatch.setattr(calib, "render", lambda r: "REPORT")
+    assert cli.main(["calibrate", "--days", "3"]) == 0
+    assert seen == [1]  # the old row falls outside --days
+    assert "REPORT" in capsys.readouterr().out
+    assert len(list((tmp_path / "r").glob("calibration-*.json"))) == 1
