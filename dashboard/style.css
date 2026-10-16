@@ -93,3 +93,19 @@ details.help { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--bor
 details.help summary { cursor: pointer; font-weight: 700; }
 details.help li { margin: 4px 0; }
 @media (max-width: 900px) { .two { grid-template-columns: 1fr; } .plan { grid-template-columns: 1fr 1fr; } }
+
+/* ---- SVG charts ---------------------------------------------------------- */
+.chart-svg { padding: 10px 12px; }
+.svgchart { width: 100%; height: auto; display: block; }
+.svgchart .grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 5; }
+.svgchart .tick { fill: var(--muted); font-size: 13px; font-family: inherit; }
+.svgchart .series { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.svgchart .hline { stroke-width: 2; stroke-dasharray: 6 6; }
+.svgchart .hlabel { font-size: 12px; font-weight: 700; font-family: inherit; }
+.svgchart .hit { opacity: 0; }
+.svgchart .hit:hover { opacity: 1; }
+.svgchart .last { stroke: var(--panel); stroke-width: 2; }
+.svgchart .shade { fill: rgba(255,212,122,.10); }
+.svgchart .errbar { stroke: var(--accent-2); stroke-width: 2; opacity: .6; }
+.legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 5px 0 12px; }
+td.wrap { white-space: normal; text-align: left; min-width: 260px; }

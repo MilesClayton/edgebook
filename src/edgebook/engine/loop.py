@@ -165,6 +165,8 @@ class LiveEngine:
             "exchanges_age_ms": t - self.state.composite_ms if comp else None,
             "exchanges": {k: asdict(v) for k, v in comp.venues.items()} if comp else {},
             "index_series": [[ts, v] for ts, v in list(self.state.index)[-900:]],
+            "history_s": self.state.history_s(t),
+            "min_history_s": self.cfg.min_history_s,
             "config": asdict(self.cfg),
             "calls": [asdict(c) for c in self.calls],
             "signal_log": list(self.signal_log)[-100:],
