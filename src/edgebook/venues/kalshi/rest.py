@@ -20,6 +20,7 @@ from edgebook.venues.kalshi.models import (
     BatchGetMarketCandlesticksResponse,
     CreateOrderV2Request,
     CreateOrderV2Response,
+    GetMarketResponse,
     GetTradesResponse,
     MarketCandlestick,
     MarketsPage,
@@ -108,6 +109,10 @@ class KalshiRest:
     async def open_markets(self, series: str) -> list[Market]:
         underlying = underlying_for(series)
         return [m.to_core(underlying) for m in await self.markets(series)]
+
+    async def market(self, ticker: str) -> RestMarket:
+        """Fetch one market, including its settled result when it has closed."""
+        return GetMarketResponse.model_validate(await self._get(f"/markets/{ticker}")).market
 
     async def candlesticks(
         self, tickers: list[str], start: datetime, end: datetime, period_min: int = 1

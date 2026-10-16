@@ -54,6 +54,10 @@ class MarketsPage(_Wire):
     cursor: str = ""
 
 
+class GetMarketResponse(_Wire):
+    market: RestMarket
+
+
 class Balance(_Wire):
     balance: int
 

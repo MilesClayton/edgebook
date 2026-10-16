@@ -70,4 +70,5 @@ class SnapshotBuilder:
             "spot_series": [[t * 1000, c] for t, c in tail],
             "signals": by_series,
             "recorder": self.recorder_stats(),
+            "public_flow": self.recorder.public_flow() if self.recorder is not None else {},
         }

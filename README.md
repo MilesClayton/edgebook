@@ -60,9 +60,13 @@ fly tokens create deploy --app edgebook-recorder   # store as FLY_API_TOKEN in t
 src/edgebook/
   core/            domain types, fee math, BookState (snapshot + delta)
   config.py        settings, environments, production guard
+  feeds/           Coinbase, Kraken and Bitstamp WS parsers and composite spot stream
   venues/kalshi/   signing, rate limiter, typed wire models, REST + WebSocket clients
   recorder/        message -> Parquet rows, buffered sink, discovery/settlement loops
   app/cli.py       entrypoints
 tests/fixtures/kalshi/  committed OpenAPI/AsyncAPI snapshot (refresh: scripts/update_kalshi_specs.sh)
 ```
-Upcoming (see SPEC.md milestones): `model`, `strategy`, `risk`, `execution`, `backtest`.
+The multi-exchange stream is exposed as `edgebook.feeds.MultiExchangeSpot`; it produces a
+median-mid composite, venue freshness/latency, cross-exchange spread, trade and book
+imbalance, and completed one-second bars. The engine integration and validation remain
+in `docs/ENGINE_PLAN.md`.

@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from edgebook.recorder.rows import market_row, message_rows
 from edgebook.recorder.sink import ParquetSink
@@ -52,6 +54,49 @@ class Recorder:
         self.subscribed: set[str] = set()
         self.settled: set[str] = set()
         self.messages = 0
+        # The exchange trade feed is anonymous.  Keep a bounded in-memory
+        # window for dashboard diagnostics; raw trades still go to Parquet.
+        self.recent_public_trades: deque[dict[str, Any]] = deque()
+
+    def observe_public_trade(self, row: dict[str, Any]) -> None:
+        now = now_ms()
+        self.recent_public_trades.append({**row, "observed_ts_ms": now})
+        cutoff = now - 15 * 60_000
+        while (
+            self.recent_public_trades
+            and int(self.recent_public_trades[0]["observed_ts_ms"]) < cutoff
+        ):
+            self.recent_public_trades.popleft()
+
+    def public_flow(self) -> dict[str, Any]:
+        """Aggregate recent anonymous public trades; this is never wallet data."""
+        now = now_ms()
+        windows = (60, 300, 900)
+        summary: list[dict[str, Any]] = []
+        for seconds in windows:
+            cutoff = now - seconds * 1000
+            rows = [
+                row for row in self.recent_public_trades if int(row["observed_ts_ms"]) >= cutoff
+            ]
+            yes = sum(float(row["count"]) for row in rows if row["taker_side"] == "yes")
+            no = sum(float(row["count"]) for row in rows if row["taker_side"] == "no")
+            notional = sum(float(row["count"]) * float(row["yes_price"]) for row in rows)
+            summary.append(
+                {
+                    "seconds": seconds,
+                    "trades": len(rows),
+                    "yes_contracts": yes,
+                    "no_contracts": no,
+                    "net_yes_contracts": yes - no,
+                    "yes_notional": notional,
+                }
+            )
+        recent = list(self.recent_public_trades)[-12:]
+        return {
+            "label": "Anonymous public trade flow; individual traders cannot be identified.",
+            "windows": summary,
+            "recent": recent,
+        }
 
     async def discover_once(self) -> list[str]:
         new: list[str] = []
@@ -95,6 +140,8 @@ class Recorder:
             self.messages += 1
             for stream, row in message_rows(msg, recv):
                 self.sink.add(stream, row)
+                if stream == "trades":
+                    self.observe_public_trade(row)
 
     async def _housekeeping(self) -> None:
         self.sink.flush_due()

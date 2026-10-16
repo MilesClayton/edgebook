@@ -124,6 +124,32 @@ def test_sink_flushes_on_size_and_age(tmp_path: Path) -> None:
     assert sink.rows_written["trades"] == 1
 
 
+def test_recent_public_flow_is_anonymous_and_signed(tmp_path: Path) -> None:
+    recorder = Recorder(None, None, ParquetSink(tmp_path), ["KXBTCD"], [])  # type: ignore[arg-type]
+    recorder.observe_public_trade(
+        {
+            "ticker": "KXBTCD-X",
+            "count": Decimal("10"),
+            "yes_price": Decimal("0.40"),
+            "taker_side": "yes",
+        }
+    )
+    recorder.observe_public_trade(
+        {
+            "ticker": "KXBTCD-Y",
+            "count": Decimal("4"),
+            "yes_price": Decimal("0.60"),
+            "taker_side": "no",
+        }
+    )
+    flow = recorder.public_flow()
+    minute = flow["windows"][0]
+    assert minute["trades"] == 2
+    assert minute["yes_contracts"] == 10
+    assert minute["net_yes_contracts"] == 6
+    assert "anonymous" in flow["label"].lower()
+
+
 class FakeRest:
     def __init__(self, open_: list[dict[str, Any]], settled: list[dict[str, Any]]) -> None:
         self.open = [RestMarket.model_validate(m) for m in open_]
