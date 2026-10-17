@@ -68,6 +68,8 @@ class PaperAccount:
     day_start_equity: float = 0.0
     last_entry_ms: dict[str, int] = field(default_factory=dict)
     started_ms: int = 0
+    # (pnl, contracts) of every closed trade, kept in full (fills are capped on save)
+    closed: list[tuple[float, float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.started_ms:
@@ -162,6 +164,18 @@ class PaperAccount:
         else:
             h.contracts += contracts
             h.cost += cost
+            last = self.fills[-1] if self.fills else None
+            if last is not None and (last.ticker, last.action, last.side, last.price) == (
+                ticker,
+                "BUY",
+                side,
+                price,
+            ):
+                # more of the same resting order: one record per order, not per print
+                last.contracts += contracts
+                last.fees += contracts * fee_each
+                last.cash_after = self.cash
+                return last
         f = Fill(
             now_ms, ticker, "BUY", side, contracts, price, contracts * fee_each, self.cash, reason
         )
@@ -187,6 +201,7 @@ class PaperAccount:
         pnl = proceeds - cost_part
         self.cash += proceeds
         self.realized += pnl
+        self.closed.append((pnl, sold))
         if sold >= h.contracts:
             del self.holdings[ticker]
         else:
@@ -216,6 +231,7 @@ class PaperAccount:
         pnl = payout - h.cost
         self.cash += payout
         self.realized += pnl
+        self.closed.append((pnl, h.contracts))
         f = Fill(
             now_ms,
             ticker,
@@ -244,6 +260,7 @@ class PaperAccount:
             "day_start_equity": self.day_start_equity,
             "last_entry_ms": self.last_entry_ms,
             "started_ms": self.started_ms,
+            "closed": self.closed,
         }
 
     @classmethod
@@ -260,6 +277,10 @@ class PaperAccount:
         acct.holdings = {k: Holding(**v) for k, v in d["holdings"].items()}
         acct.fills = [Fill(**f) for f in d["fills"]]
         acct.equity_series = [(int(t), float(e)) for t, e in d["equity_series"]]
+        if "closed" in d:
+            acct.closed = [(float(p), float(n)) for p, n in d["closed"]]
+        else:  # files from before the full record: rebuild from the fills kept
+            acct.closed = [(f.pnl, f.contracts) for f in acct.fills if f.pnl is not None]
         return acct
 
     def save(self, path: Path) -> None:

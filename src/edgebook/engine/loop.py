@@ -417,12 +417,10 @@ class LiveEngine:
                     "awaiting_result": tk in r.pending_settlement,
                 }
             )
-        closed = [f for f in acct.fills if f.pnl is not None]
-        wins = [f for f in closed if (f.pnl or 0) > 0]
-        per_contract = mean_ci(
-            np.array([(f.pnl or 0.0) / f.contracts for f in closed if f.contracts > 0], dtype=float)
-        )
-        contracts = sum(f.contracts for f in closed)
+        closed = acct.closed
+        wins = [pnl for pnl, _ in closed if pnl > 0]
+        per_contract = mean_ci(np.array([pnl / n for pnl, n in closed if n > 0], dtype=float))
+        contracts = sum(n for _, n in closed)
         return {
             "updated_ms": self.clock(),
             "name": r.spec.name,

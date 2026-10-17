@@ -136,7 +136,9 @@ def test_maker_fills_only_from_real_prints_after_the_queue() -> None:
     assert f1.fees == pytest.approx(100 * fee(0.48, MAKER_FEE))
     s.add_trade("M", 0.47, 50, "no", NOW + 2)  # through our price
     [f2] = book.match(s, acct)
-    assert f2.contracts == 50
+    assert f2 is f1  # same order: one trade record, not one per print
+    assert f2.contracts == 150
+    assert len(acct.fills) == 1
     h = acct.holdings["M"]
     assert h.contracts == 150
     assert h.cost == pytest.approx(150 * (0.48 + fee(0.48, MAKER_FEE)))

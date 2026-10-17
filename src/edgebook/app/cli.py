@@ -407,7 +407,7 @@ async def replay_engine(settings: Settings, args: argparse.Namespace) -> None:
                 "equity": acct["equity"],
                 "return_pct": acct["return_pct"],
                 "closed_trades": acct["closed_trades"],
-                "per_contract": dataclasses.asdict(rep.per_contract),
+                "per_contract": acct["per_contract"],
                 "hold_per_contract": dataclasses.asdict(rep.hold_per_contract),
                 "model_said": rep.model_said,
                 "won": rep.won,

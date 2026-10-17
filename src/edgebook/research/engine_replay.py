@@ -18,11 +18,12 @@ from __future__ import annotations
 import heapq
 import json
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 import pyarrow.dataset as ds
 
 from edgebook.core.book import BookState
@@ -81,12 +82,14 @@ def _stream(
     path = directory / name
     if not path.exists():
         return
-    dset = ds.dataset(path, partitioning="hive")
     flt = (ds.field("recv_ts_ms") >= start_ms) & (ds.field("recv_ts_ms") < end_ms)
-    files = sorted(dset.files)
+    files = sorted(str(f) for f in path.rglob("*.parquet") if f.stat().st_size > 0)
     # files are written in arrival order; sort within each file to be safe
     for i, f in enumerate(files):
-        tbl = ds.dataset(f).to_table(columns=columns, filter=flt)
+        try:
+            tbl = ds.dataset(f).to_table(columns=columns, filter=flt)
+        except (pa.ArrowInvalid, OSError):
+            continue  # an empty/torn part file left by a restart mid-write
         if tbl.num_rows == 0:
             continue
         tbl = tbl.sort_by([("recv_ts_ms", "ascending")])
@@ -201,6 +204,11 @@ def replay(
             res = markets.get(tk)
             if res is not None and res.result:
                 runner.account.settle(tk, res.result, end_ms)
-    return ReplayResult(
-        start_ms, end_ms, ticks, [engine.paper_payload(r.spec.name) for r in engine.runners]
-    )
+    accounts = []
+    for runner in engine.runners:
+        payload = engine.paper_payload(runner.spec.name)
+        payload["fills"] = [
+            asdict(f) for f in runner.account.fills
+        ]  # all of them, not the last 300
+        accounts.append(payload)
+    return ReplayResult(start_ms, end_ms, ticks, accounts)

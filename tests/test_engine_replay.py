@@ -107,6 +107,8 @@ def recording(tmp_path: Path) -> Path:
         index.append({"recv_ts_ms": START_MS + i * 1000, "index_id": "BRTI", "raw": raw})
     index.append({"recv_ts_ms": START_MS + 1000, "index_id": "BRTI", "raw": "not json"})
     write(d, "index", index)
+    (d / "index" / "date=2026-10-16" / "part-1-2.parquet").write_bytes(b"")  # torn file
+    (d / "index" / "date=2026-10-16" / "part-1-3.parquet").write_bytes(b"not parquet")
     trade = {"ticker": "M", "yes_price": 0.47, "count": 2000.0, "taker_side": "no"}
     write(d, "trades", [{"recv_ts_ms": START_MS + 960_000, **trade}])
     return d
