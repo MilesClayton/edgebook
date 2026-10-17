@@ -17,7 +17,8 @@ def test_closed_trades_kept_in_full_and_rebuilt_for_old_files(tmp_path: Path) ->
     acct.fills.clear()  # as if the fill history had been capped away
     acct.save(tmp_path / "a.json")
     [(pnl, n)] = PaperAccount.load(tmp_path / "a.json").closed
-    assert (pnl, n) == (pytest.approx(4.9), 10.0)
+    assert pnl == pytest.approx(4.9)
+    assert n == 10.0
     old = json.loads((tmp_path / "a.json").read_text())
     del old["closed"]
     old["fills"] = [

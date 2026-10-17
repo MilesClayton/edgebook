@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 import pytest
 
 from edgebook.app import cli
+from edgebook.config import Settings
 from edgebook.core.types import LiquidityRole
 from edgebook.engine.decide import EngineConfig, Position, blend_fair, evaluate, fair_up, fee
 from edgebook.engine.loop import DEFAULT_STRATEGIES, LiveEngine, StrategySpec
@@ -427,8 +428,8 @@ def test_market_results_caches_and_skips_unknown(
     monkeypatch.setenv("EDGEBOOK_DATA_DIR", str(tmp_path))
     import asyncio
 
-    got = asyncio.run(cli.market_results(cli.Settings(), {"DONE", "OPEN", "BAD"}))
+    got = asyncio.run(cli.market_results(Settings(), {"DONE", "OPEN", "BAD"}))
     assert got == {"DONE": "yes"}
     FakeRest.calls.clear()
-    asyncio.run(cli.market_results(cli.Settings(), {"DONE", "OPEN"}))
+    asyncio.run(cli.market_results(Settings(), {"DONE", "OPEN"}))
     assert FakeRest.calls == ["OPEN"]  # settled results come from the cache
