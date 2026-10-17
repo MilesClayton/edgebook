@@ -10,7 +10,7 @@ The existing engine prices each strike with deterministic models and runs indepe
 | `paper` (default) | Kalshi demo | Kalshi production (read-only) |
 | `production` | Kalshi production | Kalshi production |
 
-The legacy production `trade-once` submission path is retired. Confirmed execution uses separate `EDGEBOOK_EXECUTION_*` settings and server-side caps; it starts paused and requires explicit user confirmation for every IOC order. The existing viability-report guard remains available for older research code but does not activate the new path.
+The legacy production `trade-once` submission path is retired. Confirmed execution uses separate `EDGEBOOK_EXECUTION_*` settings and server-side caps; it starts paused and requires explicit user confirmation for every IOC order. **Real-money entries stay blocked until the strategy execution prices with (the primary paper strategy, `EDGEBOOK_EXECUTION_PROOF_STRATEGY`) shows profit per contract with its 95% confidence interval above zero over at least 200 closed paper trades on 5+ separate days** (`edgebook.execution.proof`). Exits are always allowed.
 
 ## Develop
 ```bash

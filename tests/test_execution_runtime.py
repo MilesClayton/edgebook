@@ -47,7 +47,9 @@ async def test_build_disabled_config_recovery_and_source(
 ) -> None:
     monkeypatch.setenv("FLY_MACHINE_ID", "fixture")
     monkeypatch.setattr("os.path.ismount", lambda _: True)
-    settings = live_settings(durable_mount=str(tmp_path), host_id="fixture")
+    settings = live_settings(durable_mount=str(tmp_path), host_id="fixture").model_copy(
+        update={"proof_strategy": "v1"}  # the single-strategy engine's primary
+    )
     engine = LiveEngine(LiveState(), tmp_path / "paper.json", clock=lambda: NOW)
     pem = ed25519.Ed25519PrivateKey.generate().private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
@@ -56,6 +58,7 @@ async def test_build_disabled_config_recovery_and_source(
         {"direct_member": False},
         {"api_token": ""},
         {"proposal_token": settings.api_token},
+        {"proof_strategy": "maker"},  # not a strategy this engine runs / not its primary
     ):
         with pytest.raises(GuardError):
             build_service(tmp_path, settings.model_copy(update=updates), engine, "fixture", pem)
@@ -64,6 +67,9 @@ async def test_build_disabled_config_recovery_and_source(
     service, broker, owner = build_service(tmp_path, settings, engine, "fixture", pem)
     try:
         assert service.ledger.status()["paused"]
+        proof = service.proof()
+        assert proof["proven"] is False  # an empty paper account proves nothing
+        assert proof["min_trades"] == 200
         with pytest.raises(GuardError, match="ticker"):
             service.source("ABSENT", None)
         engine.state.set_market(RestMarket.model_validate(market(TICKER)), "KXBTC15M")

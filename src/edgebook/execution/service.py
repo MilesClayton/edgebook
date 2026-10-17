@@ -54,10 +54,23 @@ class ExecutionService:
         broker: Broker,
         source: Callable[[str, dict[str, Any] | None], dict[str, Any]],
         clock: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+        *,
+        proof: Callable[[], dict[str, Any]],
     ) -> None:
         self.settings, self.ledger, self.broker = settings, ledger, broker
         self.source, self.clock = source, clock
+        self.proof = proof  # the paper record of the strategy whose prices execution uses
         self.lock = asyncio.Lock()
+
+    def require_proof(self, route: str) -> None:
+        """New entries need a paper-proven strategy; exits never do (they cut risk)."""
+        proof = self.proof()
+        if proof.get("proven") is not True:
+            self.ledger.audit(self.clock(), "entry_blocked_unproven", {"route": route, **proof})
+            raise GuardError(
+                f"real-money entries are blocked until the '{self.settings.proof_strategy}' "
+                f"paper strategy proves profitable: {proof.get('reason', 'no paper record')}"
+            )
 
     def enabled(self) -> None:
         if not self.settings.enabled:
@@ -141,6 +154,7 @@ class ExecutionService:
                 "configured": True,
                 "enabled": self.settings.enabled,
                 "environment": self.settings.environment,
+                "paper_proof": {"strategy": self.settings.proof_strategy, **self.proof()},
                 "orders": self.ledger.orders(),
                 "scope": (
                     "Caps cover orders routed here; separate manual trades are outside these caps."
@@ -324,6 +338,8 @@ class ExecutionService:
         async with self.lock:
             self.ledger.audit(self.clock(), "review_requested", request.model_dump())
             self.enabled()
+            if self.position(request.ticker) is None:
+                self.require_proof("review")
             await self.refresh()
             context = await self.context(request)
             review_id = self.ledger.review(context, self.clock(), self.settings.confirmation_ttl_ms)
@@ -386,6 +402,8 @@ class ExecutionService:
             body = self.ledger.get_proposal(request.proposal_id)
             if request.intent.model_dump() != body["intent"]:
                 raise GuardError("confirmed ticker, side, price or quantity changed")
+            if request.intent.action == "buy":
+                self.require_proof("confirm")
             await self.refresh()
             current = await self.context(
                 ReviewRequest(ticker=request.intent.ticker, quantity=request.intent.quantity)

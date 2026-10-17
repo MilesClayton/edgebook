@@ -14,6 +14,7 @@ from edgebook.engine.decide import Position, evaluate
 from edgebook.engine.loop import LiveEngine
 from edgebook.execution.broker import KalshiBroker
 from edgebook.execution.live_ledger import GuardError, LiveSettings
+from edgebook.execution.proof import paper_proof
 from edgebook.execution.service import ExecutionService
 from edgebook.execution.sqlite_ledger import SQLiteLedger
 from edgebook.venues.kalshi.auth import KalshiSigner
@@ -85,7 +86,18 @@ def build_service(
                 "call": dataclasses.asdict(call),
             }
 
-        service = ExecutionService(settings, ledger, broker, source, engine.clock)
+        proven = next((r for r in engine.runners if r.spec.name == settings.proof_strategy), None)
+        if proven is None or proven is not engine.primary:
+            raise GuardError(
+                "proof_strategy must name the engine's primary strategy (execution uses its prices)"
+            )
+
+        def proof() -> dict[str, Any]:
+            return paper_proof(
+                proven.account.closed, settings.proof_min_trades, settings.proof_min_days
+            )
+
+        service = ExecutionService(settings, ledger, broker, source, engine.clock, proof=proof)
         return service, broker, owner
     except BaseException:
         owner.close()

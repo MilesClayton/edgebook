@@ -118,8 +118,14 @@ class Harness:
         self.engine_quote_mismatch = False
         self.settings = live_settings()
         self.ledger = SQLiteLedger(path, LIMITS)
+        self.proven: dict[str, Any] = {"proven": True, "reason": "fixture"}
         self.service = ExecutionService(
-            self.settings, self.ledger, self.broker, self.source, lambda: self.clock[0]
+            self.settings,
+            self.ledger,
+            self.broker,
+            self.source,
+            lambda: self.clock[0],
+            proof=lambda: self.proven,
         )
 
     def source(self, ticker: str, position: dict[str, Any] | None) -> dict[str, Any]:

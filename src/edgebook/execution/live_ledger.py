@@ -102,6 +102,11 @@ class LiveSettings(BaseSettings):
     account_max_age_ms: int = Field(default=5000, ge=100, le=10000)
     confirmation_ttl_ms: int = Field(default=15000, ge=1000, le=30000)
     series: tuple[str, ...] = ("KXBTC15M", "KXBTCD")
+    # Real-money entries stay blocked until this paper strategy proves profitable. The floors
+    # keep the gate from being configured away.
+    proof_strategy: str = "anchored"
+    proof_min_trades: int = Field(default=200, ge=100)
+    proof_min_days: int = Field(default=5, ge=3)
 
     def limits(self) -> Limits:
         return Limits.model_validate({name: getattr(self, name) for name in Limits.model_fields})

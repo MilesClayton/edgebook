@@ -516,9 +516,9 @@ class LiveEngine:
                 }
             )
         closed = acct.closed
-        wins = [pnl for pnl, _ in closed if pnl > 0]
-        per_contract = mean_ci(np.array([pnl / n for pnl, n in closed if n > 0], dtype=float))
-        contracts = sum(n for _, n in closed)
+        wins = [pnl for pnl, _, _ in closed if pnl > 0]
+        per_contract = mean_ci(np.array([pnl / n for pnl, n, _ in closed if n > 0], dtype=float))
+        contracts = sum(n for _, n, _ in closed)
         return {
             "updated_ms": self.clock(),
             "name": r.spec.name,

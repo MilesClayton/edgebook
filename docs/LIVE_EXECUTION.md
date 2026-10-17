@@ -86,7 +86,9 @@ If JEV_MODEL changes, set EDGEBOOK_EXECUTION_JEV_MODEL to the identical identifi
 
 Existing dashboard data proxying still uses DASHBOARD_TOKEN; that token cannot authorize execution.
 
-The legacy CLI production trade-once path is retired even when its old viability guard passes. Confirmed execution uses the new controls; it does not require another paper-trading sample or assert that the historical strategy has become profitable.
+The legacy CLI production trade-once path is retired even when its old viability guard passes.
+
+**Paper proof before real-money entries.** Review and confirmation of any new entry are refused until the paper account of the strategy whose prices execution uses (`EDGEBOOK_EXECUTION_PROOF_STRATEGY`, default `anchored`, which must be the engine's primary strategy) has at least `EDGEBOOK_EXECUTION_PROOF_MIN_TRADES` closed trades (default and minimum floor 200 / 100) across `EDGEBOOK_EXECUTION_PROOF_MIN_DAYS` separate UTC days (default 5, floor 3), with the 95% confidence interval of profit per contract entirely above zero. Exits of routed positions are never blocked. `/execution/status` reports the current proof record and the reason entries are blocked; every blocked attempt is audited. Note that execution sends IOC taker orders only, so a maker strategy such as the long-shot seller cannot be routed until a post-only order type exists.
 
 ## Build and load
 
