@@ -4,6 +4,8 @@ Sources and why:
 - Kalshi order books: rebuilt from the WebSocket snapshot + delta stream.
 - CF Benchmarks BRTI (the settlement index), ~1 tick/s from Kalshi's
   ``cfbenchmarks_value`` channel. This, not an exchange price, decides results.
+- Kalshi public trades: kept briefly so simulated resting (maker) orders can
+  fill only when real volume prints through their price.
 - Optional multi-exchange composite (Coinbase/Kraken/Bitstamp): used only to
   detect that spot is moving faster than the index (a lag warning).
 """
@@ -25,9 +27,11 @@ from edgebook.venues.kalshi.models import (
     OrderbookDelta,
     OrderbookSnapshot,
     RestMarket,
+    Trade,
 )
 
 INDEX_KEEP_S = 1800
+TRADES_KEPT = 5000
 
 
 @dataclass
@@ -40,6 +44,16 @@ class MarketInfo:
     floor: float | None
     cap: float | None
     title: str = ""
+
+
+@dataclass(frozen=True)
+class TradePrint:
+    seq: int  # increasing arrival number, so consumers can resume where they left off
+    ticker: str
+    yes_price: float
+    count: float
+    taker_side: str  # "yes": taker bought YES (sold NO); "no": taker sold YES
+    ts_ms: int
 
 
 @dataclass(frozen=True)
@@ -57,6 +71,8 @@ class LiveState:
         self.ws_last_ms = 0
         self.composite: CompositeSnapshot | None = None
         self.composite_ms = 0
+        self.trades: deque[TradePrint] = deque(maxlen=TRADES_KEPT)
+        self._trade_seq = 0
 
     # ---- updates -------------------------------------------------------
     def set_market(self, m: RestMarket, series: str) -> None:
@@ -85,6 +101,14 @@ class LiveState:
                     book.apply_delta(msg.msg.side, msg.msg.price_dollars, msg.msg.delta_fp)
                 except ValueError:
                     book.reset()  # inconsistent; the ws client resyncs on sequence gaps
+        elif isinstance(msg, Trade):
+            self.add_trade(
+                msg.msg.market_ticker,
+                float(msg.msg.yes_price_dollars),
+                float(msg.msg.count_fp),
+                msg.msg.taker_side.value,
+                recv_ms,
+            )
         elif isinstance(msg, IndexValue) and msg.msg.index_id == self.index_id:
             raw = msg.msg.data
             value = _index_value(raw)
@@ -92,6 +116,15 @@ class LiveState:
                 self.index.append((recv_ms, value))
                 while self.index and self.index[0][0] < recv_ms - INDEX_KEEP_S * 1000:
                     self.index.popleft()
+
+    def add_trade(
+        self, ticker: str, yes_price: float, count: float, taker_side: str, ts_ms: int
+    ) -> None:
+        self._trade_seq += 1
+        self.trades.append(TradePrint(self._trade_seq, ticker, yes_price, count, taker_side, ts_ms))
+
+    def trades_after(self, seq: int) -> list[TradePrint]:
+        return [t for t in self.trades if t.seq > seq]
 
     def set_composite(self, snap: CompositeSnapshot, recv_ms: int) -> None:
         self.composite = snap
