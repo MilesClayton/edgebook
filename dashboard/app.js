@@ -164,11 +164,12 @@ function marketName(ticker) {
 }
 
 const TIP = {
-  action: "The engine's call right now. BUY UP/DOWN only when its model thinks the contract is cheap by at least the minimum edge after fees and every data check passes. HOLD/SELL appear when the paper account owns this market.",
-  fair: "Model's probability that UP wins, from the live CF Benchmarks index (the price Kalshi settles on), time left, and recent volatility. Inside the last 60 s it uses the part of the settlement average already printed.",
+  action: "The engine's call right now. BUY UP/DOWN only when fair value says the contract is cheap by at least the minimum edge after fees and every data check passes. HOLD/SELL appear when the paper account owns this market.",
+  fair: "Fair value the engine trades on: Kalshi's own price, nudged toward the model by the model weight. Day-one results showed Kalshi's price was the better forecast, so the model only nudges it.",
+  model: "The pricing model's raw probability that UP wins, from the live CF Benchmarks index (the price Kalshi settles on), time left, and recent volatility. Inside the last 60 s it uses the part of the settlement average already printed.",
   upPrice: "What one UP (YES) contract costs right now: the lowest offer in Kalshi's order book. It pays $1 if UP wins.",
   downPrice: "What one DOWN (NO) contract costs right now. It pays $1 if DOWN wins.",
-  edge: "Expected profit per contract if you buy now and hold to settlement: model chance − price − Kalshi's taker fee. Positive = cheap, negative = expensive.",
+  edge: "Expected profit per contract if you buy now and hold to settlement: fair value − price − Kalshi's taker fee. Positive = cheap, negative = expensive.",
   index: "CF Benchmarks BRTI, the bitcoin index Kalshi uses to settle these markets, streamed live (about once a second).",
   strike: "The level the settlement average must reach. For 15-minute markets it's the 60-second average at the start of the window.",
   left: "Time until the market closes. Settlement is the average of the index over the final 60 seconds.",
@@ -183,7 +184,7 @@ function questionFor(c) {
   return [`BTC above ${fmt.usd(c.strike, 0)} at ${close}?`, "Hourly market · UP = above the strike at close"];
 }
 function badgeFor(action) {
-  const cls = { "BUY UP": "up", "BUY DOWN": "down", HOLD: "hold", SELL: "sell" }[action] ?? "wait";
+  const cls = { "BUY UP": "up", "BUY DOWN": "down", "BID UP": "up", "BID DOWN": "down", HOLD: "hold", SELL: "sell" }[action] ?? "wait";
   return el("div", { class: `badge ${cls}`, title: TIP.action }, action);
 }
 
@@ -196,12 +197,15 @@ function countdown(ms, cls = "countdown") {
 }
 function probBar(c) {
   const p = c.fair_up;
-  if (p == null) return el("div", { class: "muted" }, "Model probability not available yet.");
+  if (p == null) return el("div", { class: "muted" }, "Fair value not available yet (needs live index data and a two-sided Kalshi market).");
   const up = el("div", { class: "up", style: `width:${(p * 100).toFixed(1)}%` }, p >= 0.12 ? `UP ${fmt.pct(p)}` : "");
   const down = el("div", { class: "down" }, 1 - p >= 0.12 ? `DOWN ${fmt.pct(1 - p)}` : "");
-  const bar = el("div", { class: "probbar", title: "Coloured bar = the model's probability. White tick = what Kalshi's prices imply (mid of bid and ask). A gap between them is where an edge would come from." }, up, down);
+  const bar = el("div", { class: "probbar", title: "Coloured bar = the fair value the engine trades on. White tick = what Kalshi's prices imply (mid of bid and ask). A gap between them is where an edge would come from." }, up, down);
   if (c.market_up != null) bar.append(el("div", { class: "mkt", style: `left:calc(${(c.market_up * 100).toFixed(1)}% - 1px)` }));
-  return el("div", {}, bar, el("div", { class: "legend" }, el("span", {}, `Model: UP ${fmt.pct(p)}`), el("span", {}, `Kalshi prices imply: UP ${fmt.pct(c.market_up)}`)));
+  return el("div", {}, bar, el("div", { class: "legend" },
+    el("span", { title: TIP.model }, `Model: UP ${fmt.pct(c.model_up)}`),
+    el("span", { title: "Probability implied by Kalshi's prices (mid of best bid and ask)." }, `Kalshi: UP ${fmt.pct(c.market_up)}`),
+    el("span", { title: TIP.fair }, `Used: UP ${fmt.pct(p)}`)));
 }
 function planBox(c) {
   const cell = (k, v, tip) => el("div", { title: tip }, el("div", { class: "k" }, k), el("div", { class: "v" }, v));
@@ -287,6 +291,7 @@ function fifteenPanel(d, c, held) {
       ["Volatility", c.sigma_per_min_bps ? `${c.sigma_per_min_bps.toFixed(1)} bp/min` : "warming up", TIP.vol],
     ]),
     h ? el("div", { class: "position", title: "The simulated $500k account's position in this market." }, `Paper holds ${fmt.n(h.contracts)} ${h.side} @ ${fmt.price(h.avg_cost)} · unrealized ${h.unrealized == null ? "–" : fmt.usd(h.unrealized, 0)}`) : null,
+    makerLine(d, c),
     el("div", { class: "gates" }, gates.map(([name, ok]) => el("span", { class: `gate ${ok ? "ok" : "no"}`, title: ok ? `Check passed: ${name}` : `Blocking new entries: ${name}` }, `${ok ? "✓" : "✗"} ${name}`))),
   );
   const openMs = closeMs(d, c) - 900_000;
@@ -305,13 +310,21 @@ function fifteenPanel(d, c, held) {
   return el("div", { class: "two" }, left, right);
 }
 
+function makerLine(d, c) {
+  const o = (d.maker_orders ?? []).find((x) => x.ticker === c.ticker);
+  if (!o) return null;
+  return el("div", { class: "position", title: "The Maker strategy's simulated resting order. It never pays the ask: it waits for a real seller to hit its bid, and fills only after the contracts already queued at that price have traded." },
+    `Maker strategy is bidding ${o.side === "yes" ? "UP" : "DOWN"} at ${fmt.price(o.price)} for ${fmt.n(o.contracts)} contracts · ${fmt.n(o.queue_ahead)} queued ahead`);
+}
+
 function ladder(d, hourly) {
   const close = hourly.length ? closeMs(d, hourly[0]) : null;
   const rows = hourly.slice().sort((a, b) => b.strike - a.strike);
   const t = table([
     { label: "BTC above", get: (c) => fmt.usd(c.strike, 0), tip: "The strike: UP wins if the 60-second settlement average at the close is above this." },
-    { label: "Model UP", get: (c) => c.fair_up, fmt: fmt.pct, tip: TIP.fair },
+    { label: "Model UP", get: (c) => c.model_up, fmt: fmt.pct, tip: TIP.model },
     { label: "Kalshi UP", get: (c) => c.market_up, fmt: fmt.pct, tip: "Probability implied by Kalshi's prices (mid of best bid and ask)." },
+    { label: "Fair UP", get: (c) => c.fair_up, fmt: fmt.pct, tip: TIP.fair },
     { label: "UP costs", get: (c) => c.up_price, fmt: fmt.price, tip: TIP.upPrice },
     { label: "Buy UP ≤", get: (c) => c.buy_up_below, fmt: (v) => (v == null ? "never" : fmt.price(v)), tip: "UP is a buy at or below this price." },
     { label: "DOWN costs", get: (c) => c.down_price, fmt: fmt.price, tip: TIP.downPrice },
@@ -331,7 +344,7 @@ function signalLog(d) {
       { label: "Time", get: (e) => fmt.time(e.ts_ms) },
       { label: "Market", get: (e) => (e.series === "KXBTC15M" ? `15-min ${fmt.usd(e.strike, 0)}` : `above ${fmt.usd(e.strike, 0)}`) },
       { label: "Change", get: (e) => `${e.from ?? "–"} → ${e.to}` },
-      { label: "Model UP", get: (e) => e.fair_up, fmt: fmt.pct },
+      { label: "Fair UP", get: (e) => e.fair_up, fmt: fmt.pct, tip: TIP.fair },
       { label: "UP / DOWN cost", get: (e) => `${fmt.price(e.up_price)} / ${fmt.price(e.down_price)}` },
       { label: "Why", get: (e) => e.reason, cls: "wrap" },
     ], log) : empty("No call changes yet since the engine started. Quiet markets stay on NO TRADE."));
@@ -342,8 +355,9 @@ function helpBox(d) {
     el("summary", {}, "How to use this page"),
     el("ul", {},
       el("li", {}, "Start at “Right now”. It names the single best action, or says why there is none."),
-      el("li", {}, `BUY UP / BUY DOWN appears only when the model's expected profit is at least ${fmt.cents(d.config.min_edge)} per contract after Kalshi's fee and every data check is green. Pay no more than the “Buy … at or below” price.`),
-      el("li", {}, "After buying: sell if the bid reaches the “Sell when bid ≥” price (selling then beats holding). Otherwise hold to the result. The paper account follows exactly these rules."),
+      el("li", {}, `Calls follow the “${d.strategy_label ?? "primary"}” strategy. Fair value starts at Kalshi's price and moves ${fmt.pct(d.config.model_weight)} of the way toward the model (in log-odds). Day one showed that trusting the model fully lost money.`),
+      el("li", {}, `BUY UP / BUY DOWN appears only when the expected profit at fair value is at least ${fmt.cents(d.config.min_edge)} per contract after Kalshi's fee and every data check is green. Pay no more than the “Buy … at or below” price.`),
+      el("li", {}, "After buying: hold to the result. Sell only if the bid reaches the “Sell when bid ≥” price, which takes a profit above fair value. The paper account follows exactly these rules."),
       el("li", {}, "Gray NO TRADE means Kalshi's price is fair or a check failed (stale data, wide spread, too close to the close). That is the right answer most of the time."),
       el("li", {}, "Hover any label or number for what it means. Nothing here is guaranteed; past tests found no reliable edge, so watch the Paper $500k results before trusting it with real money."),
     ));
@@ -358,6 +372,7 @@ async function live(root) {
   const held = new Map((paper?.data?.holdings ?? []).map((h) => [h.ticker, h]));
   const gap = d.index && d.exchanges_mid ? (d.exchanges_mid / d.index - 1) * 1e4 : null;
   root.append(el("div", { class: "statusbar" },
+    d.strategy_label ? el("span", { class: "pill warn", title: `${TIP.fair} Compare every strategy on the Paper $500k page.` }, `${d.strategy_label} · model weight ${fmt.pct(d.config.model_weight)}`) : null,
     el("span", { class: `pill ${stale ? "bad" : "good"}`, title: "How old this page's data is right now. Refreshes every 3 seconds." }, stale ? `STALE ${fmt.age(ageNow)}` : `LIVE · ${fmt.age(ageNow)}`),
     el("span", { class: `pill ${d.index_age_ms <= 3000 ? "good" : "bad"}`, title: TIP.index }, `BTC index ${fmt.usd(d.index)} · ${fmt.age(d.index_age_ms)}`),
     el("span", { class: `pill ${d.ws_age_ms <= 10_000 ? "good" : "bad"}`, title: "Time since the last message from Kalshi's live order-book stream." }, `Kalshi ${fmt.age(d.ws_age_ms)}`),
@@ -373,21 +388,84 @@ async function live(root) {
   root.append(signalLog(d), helpBox(d));
 }
 
+const SERIES_COLORS = ["var(--muted)", "var(--accent)", "var(--accent-2)", "var(--warn)", "var(--bad)"];
+let paperSel = null;
+
+function signedPct(x) {
+  const r = Number(x.toFixed(2));
+  return `${r > 0 ? "+" : r < 0 ? "−" : ""}${Math.abs(r).toFixed(2)}%`;
+}
+function verdict(pc) {
+  if (!pc || !pc.n) return ["no trades yet", "warn"];
+  if (pc.n < 30 || pc.ci_lo == null) return [`too few trades (${pc.n})`, "warn"];
+  return pc.ci_lo > 0 ? ["profitable", "good"] : pc.ci_hi < 0 ? ["loses money", "bad"] : ["unproven (could be luck)", "warn"];
+}
+function centsCI(pc) {
+  if (!pc || pc.mean == null) return "–";
+  const ci = pc.ci_lo == null ? "" : ` (${(pc.ci_lo * 100).toFixed(1)} to ${(pc.ci_hi * 100).toFixed(1)})`;
+  return `${fmt.cents(pc.mean)}${ci}`;
+}
+
 async function paper(root) {
-  const p = (await load("paper"))?.data;
-  if (!p) return root.append(empty("The paper account hasn't published yet."));
-  root.append(el("div", { class: "banner" }, "Simulated account: it follows the Live Calls automatically against real Kalshi order books and fees. No real money is involved."));
+  const sp = (await load("strategies"))?.data;
+  if (!sp?.accounts?.length) {
+    const p = (await load("paper"))?.data;
+    if (!p) return root.append(empty("The paper account hasn't published yet."));
+    return paperAccount(root, p);
+  }
+  const accts = sp.accounts;
+  if (!accts.some((a) => a.name === paperSel)) paperSel = sp.primary;
+  root.append(el("div", { class: "banner" }, "Simulated accounts: each strategy trades its own $500,000 on the same live Kalshi order books and fees. No real money is involved. A strategy counts as profitable only when the whole 95% range of its profit per contract is above zero."));
+  const fit = sp.fit;
+  if (fit) {
+    root.append(el("p", { class: "muted", title: "Fitted by `edgebook strategy-report --write-weight` on every market the engine evaluated (traded or not), choosing the weight on earlier markets and scoring it on later ones. Lower log-loss = better forecasts." },
+      `Model weight ${fmt.pct(fit.model_weight)} was fitted on ${fmt.n(fit.markets)} settled markets. On later markets, log-loss: Kalshi's price alone ${fit.test_logloss_market?.toFixed(4)}, model alone ${fit.test_logloss_model?.toFixed(4)}, chosen blend ${fit.test_logloss?.toFixed(4)}.`));
+  }
+  root.append(el("h2", {}, "Strategies side by side"));
+  const cmp = table([
+    { label: "Strategy", get: (a) => `${a.label}${a.primary ? " ★" : ""}`, tip: "★ = the strategy the Live Calls page follows. Click a row for its positions and trades." },
+    { label: "Equity", get: (a) => a.equity, fmt: (v) => fmt.usd(v, 0) },
+    { label: "Return", get: (a) => a.return_pct / 100, fmt: (v) => signedPct(v * 100), tone: true },
+    { label: "Closed trades", get: (a) => a.closed_trades, fmt: fmt.n },
+    { label: "Profit / contract (95% range)", get: (a) => centsCI(a.per_contract), tip: "Average result per contract over closed trades, after fees, with its 95% confidence range in cents." },
+    { label: "Verdict", get: (a) => verdict(a.per_contract)[0], tip: "Profitable only if the whole 95% range is above zero; needs at least 30 closed trades to judge." },
+    { label: "Open", get: (a) => `${a.holdings.length} pos${a.resting.length ? ` · ${a.resting.length} bids` : ""}`, tip: "Open positions, plus resting bids for the maker strategy" },
+    { label: "Status", get: (a) => (a.halted ? "PAUSED" : "Trading"), tip: "Entries pause for the rest of the UTC day after a 5% daily loss." },
+  ], accts, (a) => (a.name === paperSel ? "sel" : ""));
+  cmp.querySelectorAll("tbody tr").forEach((tr, i) => {
+    tr.style.cursor = "pointer";
+    tr.title = `Show ${accts[i].label}`;
+    tr.addEventListener("click", () => { paperSel = accts[i].name; render(); });
+  });
+  root.append(cmp);
+  const series = accts.map((a, i) => ({ name: a.label, points: a.equity_series ?? [], color: SERIES_COLORS[i % SERIES_COLORS.length] }));
+  if (series.some((x) => x.points.length > 1)) {
+    root.append(el("h2", { title: "Each account's value over time (cash + open positions at what selling would pay now)." }, "Equity by strategy"),
+      lineChart(series, { yfmt: (v) => fmt.usd(v, 0), hlines: [{ y: accts[0].starting_cash, label: "start", color: "var(--muted)" }], label: "Paper equity by strategy", legend: true }));
+  }
+  const tabs = el("div", { class: "tabs", role: "tablist" }, accts.map((a) => {
+    const b = el("button", { type: "button", class: a.name === paperSel ? "active" : null, role: "tab", "aria-selected": String(a.name === paperSel) }, a.label);
+    b.addEventListener("click", () => { paperSel = a.name; render(); });
+    return b;
+  }));
+  root.append(el("h2", {}, "Account detail"), tabs);
+  paperAccount(root, accts.find((a) => a.name === paperSel));
+}
+
+function paperAccount(root, p) {
+  if (p.description) root.append(el("p", { class: "muted" }, p.description));
   const ret = p.return_pct;
+  const [vtext, vtone] = verdict(p.per_contract);
   root.append(el("div", { class: "cards" },
     card("Equity", fmt.usd(p.equity, 0), `started at ${fmt.usd(p.starting_cash, 0)}`, "Cash plus open positions valued at what selling them would pay right now (best bid minus fee).", ret >= 0 ? "good" : "bad"),
-    card("Return", `${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%`, `since ${new Date(p.started_ms).toLocaleDateString()}`, "Equity versus the $500,000 starting balance."),
+    card("Return", signedPct(ret), `since ${new Date(p.started_ms).toLocaleDateString()}`, "Equity versus the $500,000 starting balance."),
     card("Realized P&L", fmt.usd(p.realized, 0), `${fmt.n(p.closed_trades)} closed trades`, "Profit or loss locked in by selling or by markets settling."),
-    card("Unrealized P&L", fmt.usd(p.unrealized, 0), `${p.holdings.length} open positions`, "Paper profit/loss on positions still open, at current sell prices."),
+    card("Profit / contract", p.per_contract?.mean == null ? "–" : fmt.cents(p.per_contract.mean), vtext, "Average result per contract over closed trades after fees. The verdict uses the 95% confidence range.", vtone === "good" ? "good" : vtone === "bad" ? "bad" : ""),
     card("Win rate", p.win_rate == null ? "–" : fmt.pct(p.win_rate), "closed trades in profit", "Share of closed trades that made money. Not the goal by itself: a strategy can win often and still lose money."),
     card("Status", p.halted ? "PAUSED" : "Trading", p.halted ? "daily loss limit hit" : `risk ${(p.risk.max_risk_per_trade * 100).toFixed(0)}%/trade, ≤ ${fmt.usd(p.risk.max_per_market, 0)}/market`, "Entries pause for the rest of the UTC day if the account drops 5% from its start-of-day value.", p.halted ? "bad" : "good"),
   ));
   const eq = p.equity_series ?? [];
-  if (eq.length > 1) {
+  if (!p.name && eq.length > 1) {
     root.append(el("h2", { title: "Account value over time, sampled every 10 seconds." }, "Equity"), lineChart([{ name: "Equity", points: eq, color: "var(--accent-2)" }], { yfmt: (v) => fmt.usd(v, 0), hlines: [{ y: p.starting_cash, label: "start", color: "var(--muted)" }], label: "Paper equity" }));
   }
   root.append(el("h2", {}, "Open positions"));
@@ -400,6 +478,18 @@ async function paper(root) {
     { label: "Unrealized", get: (h) => h.unrealized, fmt: (v) => fmt.usd(v, 0), tone: true },
     { label: "Status", get: (h) => (h.awaiting_result ? "closed: waiting for Kalshi result" : "live") },
   ], p.holdings) : empty("No open positions."));
+  if (p.mode === "maker") {
+    root.append(el("h2", { title: "Simulated resting orders. They fill only when a real seller trades at or through the price, after the contracts already queued there." }, "Resting bids"));
+    root.append(p.resting?.length ? table([
+      { label: "Market", get: (o) => marketName(o.ticker) },
+      { label: "Side", get: (o) => (o.side === "yes" ? "UP" : "DOWN") },
+      { label: "Bid", get: (o) => o.price, fmt: fmt.price },
+      { label: "Fair value", get: (o) => o.fair, fmt: fmt.price, tip: "Fair value of that side when the bid was placed" },
+      { label: "Contracts left", get: (o) => o.contracts, fmt: fmt.n },
+      { label: "Queued ahead", get: (o) => o.queue_ahead, fmt: fmt.n, tip: "Contracts at this price that must trade before ours" },
+      { label: "Placed", get: (o) => fmt.time(o.placed_ms) },
+    ], p.resting) : empty("No resting bids right now: no price 2¢+ below fair value fits inside the spread, or a data check is failing."));
+  }
   root.append(el("h2", {}, "Trade log (newest first)"));
   const fills = (p.fills ?? []).slice().reverse();
   root.append(fills.length ? table([
@@ -412,7 +502,7 @@ async function paper(root) {
     { label: "Fees", get: (f) => f.fees, fmt: (v) => fmt.usd(v, 0) },
     { label: "P&L", get: (f) => f.pnl, fmt: (v) => (v == null ? "–" : fmt.usd(v, 0)), tone: true },
     { label: "Why", get: (f) => f.reason, cls: "wrap" },
-  ], fills) : empty("No trades yet. The engine only buys when a market is mispriced by at least the minimum edge; on most minutes it correctly waits."));
+  ], fills) : empty("No trades yet. Strategies only enter when a market is mispriced by their minimum edge; on most minutes they correctly wait."));
 }
 
 const STRATEGY_NAMES = {

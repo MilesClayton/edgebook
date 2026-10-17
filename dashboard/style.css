@@ -109,3 +109,9 @@ details.help li { margin: 4px 0; }
 .svgchart .errbar { stroke: var(--accent-2); stroke-width: 2; opacity: .6; }
 .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 5px 0 12px; }
 td.wrap { white-space: normal; text-align: left; min-width: 260px; }
+
+/* ---- strategy comparison -------------------------------------------------- */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.tabs button.active { color: #031a18; background: var(--accent); border-color: var(--accent); font-weight: 750; }
+tr.sel td { background: rgba(107,165,255,.10); }
+tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent-2); }

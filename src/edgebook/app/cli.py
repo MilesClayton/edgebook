@@ -3,6 +3,8 @@
 python -m edgebook record    # stream prod market data to Parquet (needs a prod key)
 python -m edgebook balance   # signed call to verify a key against EDGEBOOK_ENV
 python -m edgebook markets   # list open markets per series (public, no key)
+python -m edgebook strategy-report [--write-weight]  # paper results + model-weight fit
+python -m edgebook replay-engine --start 2026-10-16T16:00 --hours 3  # live engine on recorded data
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from pathlib import Path
 from edgebook.config import KALSHI_URLS, Settings, assert_live_trading_allowed
 from edgebook.core.fees import trade_fee
 from edgebook.core.types import LiquidityRole
-from edgebook.engine.loop import LiveEngine
+from edgebook.engine.loop import DEFAULT_STRATEGIES, FITTED_WEIGHT_FILE, LiveEngine
 from edgebook.engine.state import LiveState
 from edgebook.feeds.run import MultiExchangeSpot
 from edgebook.history import coinbase
@@ -34,7 +36,8 @@ from edgebook.recorder import http as dashboard_http
 from edgebook.recorder.run import Recorder
 from edgebook.recorder.sink import ParquetSink
 from edgebook.research import calibrate as calib
-from edgebook.research import features, strategies
+from edgebook.research import engine_replay, features, strategies
+from edgebook.research import strategy_report as srep
 from edgebook.venues.kalshi.auth import KalshiSigner
 from edgebook.venues.kalshi.models import CreateOrderV2Request
 from edgebook.venues.kalshi.rest import KalshiRest
@@ -54,9 +57,16 @@ def signer_from(settings: Settings) -> KalshiSigner:
 
 
 def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEngine:
-    """Run the live decision engine + $500k paper account inside the recorder."""
+    """Run the live decision engine + one $500k paper account per strategy inside the
+    recorder."""
     state = LiveState()
-    engine = LiveEngine(state, settings.data_dir / "engine" / "paper.json")
+    engine_dir = settings.data_dir / "engine"
+    engine = LiveEngine(
+        state,
+        engine_dir / "paper.json",
+        strategies=DEFAULT_STRATEGIES,
+        decision_log_dir=engine_dir / "decisions",
+    )
     spot = MultiExchangeSpot()
 
     async def engine_loop() -> None:
@@ -67,6 +77,8 @@ def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEn
             if n % 2 == 0:
                 dashboard_http.write_kind(store, "live", clean(engine.live_payload()))
                 dashboard_http.write_kind(store, "paper", clean(engine.paper_payload()))
+            if n % 4 == 0:
+                dashboard_http.write_kind(store, "strategies", clean(engine.strategies_payload()))
             if n % 10 == 0:
                 engine.save()
             await asyncio.sleep(1.0)
@@ -327,14 +339,112 @@ async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
     )
 
 
-COMMANDS = {"record": record, "balance": balance, "markets": markets}
+async def market_results(settings: Settings, tickers: set[str]) -> dict[str, str]:
+    """Kalshi results for ``tickers`` (cached on disk; open markets are re-asked)."""
+    cache_path = settings.data_dir / "engine" / "results.json"
+    try:
+        cache: dict[str, str] = json.loads(cache_path.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    rest = KalshiRest(settings.kalshi_market_data_url)
+    for tk in sorted(tickers - set(cache)):
+        try:
+            m = await rest.market(tk)
+        except Exception:  # unknown/delisted ticker: skip it
+            log.warning("no market data for %s", tk)
+            continue
+        if m.result in ("yes", "no"):
+            cache[tk] = m.result
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache))
+    return cache
+
+
+async def strategy_report(settings: Settings) -> None:
+    engine_dir = settings.data_dir / "engine"
+    accounts = {
+        ("v1" if p.stem == "paper" else p.stem.removeprefix("paper-")): json.loads(p.read_text())
+        for p in sorted(engine_dir.glob("paper*.json"))
+    }
+    decisions = srep.load_decisions(engine_dir / "decisions")
+    tickers = {r["ticker"] for r in decisions}
+    for a in accounts.values():
+        tickers |= {f["ticker"] for f in a["fills"]} | set(a["holdings"])
+    results = await market_results(settings, tickers)
+    fit = srep.fit_model_weight(decisions, results)
+    reports = [srep.account_report(name, a, results) for name, a in accounts.items()]
+    out = srep.report_json(fit, reports)
+    print(json.dumps(clean(out), indent=2))
+    if WRITE_WEIGHT:
+        if fit is None or not fit.enough_data:
+            print(f"not writing a weight: need {srep.MIN_MARKETS_TO_FIT}+ settled markets")
+        else:
+            (engine_dir / FITTED_WEIGHT_FILE).write_text(json.dumps(clean(dataclasses.asdict(fit))))
+            print(f"wrote model_weight={fit.model_weight}; restart the engine to use it")
+
+
+async def replay_engine(settings: Settings, args: argparse.Namespace) -> None:
+    """Run every default strategy through recorded data (UTC start, N hours)."""
+    start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = start_ms + int(args.hours * 3_600_000)
+    out_dir = settings.data_dir / "replay" / start.strftime("%Y%m%dT%H%M")
+    if out_dir.exists():
+        for f in out_dir.glob("paper*.json"):
+            f.unlink()  # a fresh replay, never resumed accounts
+    result = await asyncio.to_thread(
+        engine_replay.replay, settings.data_dir, out_dir, DEFAULT_STRATEGIES, start_ms, end_ms
+    )
+    results = {
+        tk: m.result for tk, m in engine_replay.load_markets(settings.data_dir).items() if m.result
+    }
+    summary = []
+    for acct in result.accounts:
+        rep = srep.account_report(acct["name"], acct, results)
+        summary.append(
+            {
+                "name": acct["name"],
+                "equity": acct["equity"],
+                "return_pct": acct["return_pct"],
+                "closed_trades": acct["closed_trades"],
+                "per_contract": acct["per_contract"],
+                "hold_per_contract": dataclasses.asdict(rep.hold_per_contract),
+                "model_said": rep.model_said,
+                "won": rep.won,
+                "paid": rep.paid,
+            }
+        )
+    print(
+        json.dumps(
+            clean(
+                {
+                    "start": args.start,
+                    "hours": args.hours,
+                    "ticks": result.ticks,
+                    "strategies": summary,
+                }
+            ),
+            indent=2,
+        )
+    )
+
+
+COMMANDS = {
+    "record": record,
+    "balance": balance,
+    "markets": markets,
+    "strategy-report": strategy_report,
+}
+WRITE_WEIGHT = False  # set by --write-weight
 PUBLISH = False  # set by --publish
 DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate, "research": research}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="edgebook")
-    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once"]))
+    parser.add_argument(
+        "command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once", "replay-engine"])
+    )
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--series", default="KXBTC15M")
     parser.add_argument("--execute", action="store_true", help="actually place the order")
@@ -344,9 +454,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--session-cap", type=float, default=None, help="maximum cumulative order debit"
     )
     parser.add_argument("--publish", action="store_true", help="push the report to the dashboard")
+    parser.add_argument(
+        "--write-weight", action="store_true", help="strategy-report: save the fitted weight"
+    )
+    parser.add_argument("--start", help="replay-engine: UTC start, e.g. 2026-10-16T16:00")
+    parser.add_argument("--hours", type=float, default=3.0, help="replay-engine: window length")
     args = parser.parse_args(argv)
-    global PUBLISH
+    global PUBLISH, WRITE_WEIGHT
     PUBLISH = args.publish
+    WRITE_WEIGHT = args.write_weight
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -356,6 +472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = Settings()
         if args.command == "trade-once":
             asyncio.run(trade_once(settings, args))
+        elif args.command == "replay-engine":
+            asyncio.run(replay_engine(settings, args))
         elif args.command in DAY_COMMANDS:
             asyncio.run(DAY_COMMANDS[args.command](settings, args.days))
         else:
