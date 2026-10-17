@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from edgebook.engine.decide import Call, EngineConfig, evaluate, fee
-from edgebook.engine.maker import MakerBook, MakerConfig
+from edgebook.engine.maker import LongshotConfig, MakerBook, MakerConfig, quote_longshot
 from edgebook.engine.paper import PaperAccount, RiskConfig
 from edgebook.engine.state import LiveState, MarketInfo
 from edgebook.model.calibration import mean_ci
@@ -46,9 +46,12 @@ class StrategySpec:
     label: str
     description: str
     cfg: EngineConfig = field(default_factory=EngineConfig)
-    mode: str = "taker"  # "taker": buys at the ask | "maker": rests bids and waits
+    # "taker": buys at the ask | "maker": rests bids near fair | "longshot": sells long shots
+    mode: str = "taker"
     maker: MakerConfig = field(default_factory=MakerConfig)
+    longshot: LongshotConfig = field(default_factory=LongshotConfig)
     uses_fitted_weight: bool = False  # take model_weight from model_weight.json when present
+    risk: RiskConfig | None = None  # this strategy's own limits (else the engine's)
 
 
 DEFAULT_STRATEGIES: tuple[StrategySpec, ...] = (
@@ -84,6 +87,17 @@ DEFAULT_STRATEGIES: tuple[StrategySpec, ...] = (
         mode="maker",
         uses_fitted_weight=True,
     ),
+    StrategySpec(
+        "longshot",
+        "Long-shot seller (maker)",
+        "Sells overpriced long shots: when UP or DOWN is offered at 2-15¢ with 5-60 min left, "
+        "rests a bid on the other side that joins the long shot's ask, unless fair value says "
+        "the long shot is worth its price. Holds to the result. Up to $2.5k per market and "
+        "$15k per close (every strike of one hour moves together).",
+        EngineConfig(model_weight=0.2, exit_mode="take_profit", take_profit=1.0),
+        mode="longshot",
+        risk=RiskConfig(max_risk_per_trade=0.005, max_per_market=2_500.0, max_open_markets=40),
+    ),
 )
 PRIMARY = "anchored"
 
@@ -95,14 +109,15 @@ class StrategyRunner:
         self.spec = spec
         self.cfg = spec.cfg
         self.account_path = account_path
+        risk = spec.risk or risk or RiskConfig()
         self.account = PaperAccount.load(account_path, risk)
         # risk limits come from code, not from whatever an older account file saved
-        self.account.risk = risk or RiskConfig()
+        self.account.risk = risk
         self.calls: list[Call] = []
         self.pending_settlement: set[str] = set()
         self.last_action: dict[str, str] = {}
         self.signal_log: deque[dict[str, Any]] = deque(maxlen=200)
-        self.maker = MakerBook() if spec.mode == "maker" else None
+        self.maker = MakerBook() if spec.mode in ("maker", "longshot") else None
 
     def save(self) -> None:
         self.account.save(self.account_path)
@@ -194,6 +209,14 @@ class LiveEngine:
         runner = runner or self.primary
         now_s = t_ms / 1000
         live = [m for m in self.state.markets.values() if m.open_ts <= now_s < m.close_ts]
+        if runner.spec.mode == "longshot":  # every strike: long shots sit far from the index
+            horizon = now_s + runner.spec.longshot.max_secs_left
+            return [m for m in live if m.close_ts <= horizon] + [
+                self.state.markets[t]
+                for t in runner.account.holdings
+                if t in self.state.markets
+                and not self.state.markets[t].open_ts <= now_s < self.state.markets[t].close_ts
+            ]
         out = [m for m in live if m.series == "KXBTC15M"]
         hourly = [m for m in live if m.series == "KXBTCD" and m.floor is not None]
         cur = self.state.index_now()
@@ -237,6 +260,8 @@ class LiveEngine:
             call = evaluate(self.state, m, t, r.cfg, acct.position(m.ticker))
             if call.action == "SELL":
                 acct.sell(m.ticker, self.state.bids(m.ticker, call.position.side), t, call.reason)  # type: ignore[union-attr]
+            elif r.spec.mode == "longshot":
+                self._longshot_call(r, call, equity, t, halted)
             elif r.maker is not None:
                 self._maker_call(r, call, equity, t, halted)
             elif call.action.startswith("BUY") and not halted:
@@ -303,6 +328,70 @@ class LiveEngine:
             f"Resting a {name} bid at {order.price:.2f} for {order.contracts:,.0f} contracts "
             f"(fair value {order.fair:.2f}); fills only if a seller hits it."
         )
+
+    def _longshot_call(
+        self, r: StrategyRunner, call: Call, equity: float, t: int, halted: bool
+    ) -> None:
+        if r.maker is None:
+            return
+        g = call.gates
+        data_ok = all(
+            g.get(k, False)
+            for k in (
+                "market open",
+                "settlement index live (< 3 s old)",
+                "Kalshi stream live",
+                "both sides quoted",
+            )
+        )
+        cfg = r.spec.longshot
+        order = quote_longshot(
+            r.maker,
+            self.state,
+            r.account,
+            call,
+            cfg,
+            equity,
+            t,
+            data_ok and not halted,
+            cfg.max_event_cost - self._event_exposure(r, call.ticker),
+        )
+        if call.position is not None and order is None:
+            return  # holding to the result
+        if order is None:
+            call.action = "NO TRADE"
+            if halted:
+                call.reason = "Daily loss limit reached: entries paused until tomorrow (UTC)."
+            elif not data_ok:
+                call.reason = (
+                    call.reason if call.reason.startswith("Waiting") else "Waiting: data checks."
+                )
+            else:
+                call.reason = (
+                    f"No long shot to sell: neither side is offered at "
+                    f"{cfg.min_ask * 100:.0f}-{cfg.max_ask * 100:.0f}¢ with "
+                    f"{cfg.min_secs_left / 60:.0f}-{cfg.max_secs_left / 60:.0f} min left, "
+                    "or fair value says it is not overpriced."
+                )
+            return
+        ours = "UP" if order.side == "yes" else "DOWN"
+        long = "DOWN" if order.side == "yes" else "UP"
+        call.action = f"BID {ours}"
+        call.reason = (
+            f"Selling the {long} long shot at {1 - order.price:.2f}: resting a {ours} bid at "
+            f"{order.price:.2f} for {order.contracts:,.0f} contracts; holds to the result."
+        )
+
+    def _event_exposure(self, r: StrategyRunner, ticker: str) -> float:
+        """Dollars at risk on other strikes of the same close (holdings + resting orders)."""
+        event = ticker.rsplit("-", 1)[0]
+        held = sum(h.cost for tk, h in r.account.holdings.items() if tk.rsplit("-", 1)[0] == event)
+        resting = sum(
+            (o.price + fee(o.price)) * o.contracts
+            for tk, o in (r.maker.orders.items() if r.maker else [])
+            if tk != ticker and tk.rsplit("-", 1)[0] == event
+        )
+        return held + resting
 
     def _log_change(self, r: StrategyRunner, call: Call, t: int) -> None:
         """Record every time a market's call changes (the 'when to act' history)."""
@@ -384,7 +473,8 @@ class LiveEngine:
         t = self.clock()
         cur = self.state.index_now()
         comp = self.state.composite
-        maker = next((r for r in self.runners if r.maker is not None), None)
+        maker = next((r for r in self.runners if r.spec.mode == "maker"), None)
+        longshot = next((r for r in self.runners if r.spec.mode == "longshot"), None)
         return {
             "updated_ms": t,
             "strategy": self.primary.spec.name,
@@ -403,6 +493,9 @@ class LiveEngine:
             "signal_log": list(self.signal_log)[-100:],
             "maker_orders": [asdict(o) for o in maker.maker.orders.values()]
             if maker is not None and maker.maker is not None
+            else [],
+            "longshot_orders": [asdict(o) for o in longshot.maker.orders.values()]
+            if longshot is not None and longshot.maker is not None
             else [],
         }
 
@@ -427,9 +520,9 @@ class LiveEngine:
                 }
             )
         closed = acct.closed
-        wins = [pnl for pnl, _ in closed if pnl > 0]
-        per_contract = mean_ci(np.array([pnl / n for pnl, n in closed if n > 0], dtype=float))
-        contracts = sum(n for _, n in closed)
+        wins = [pnl for pnl, _, _ in closed if pnl > 0]
+        per_contract = mean_ci(np.array([pnl / n for pnl, n, _ in closed if n > 0], dtype=float))
+        contracts = sum(n for _, n, _ in closed)
         return {
             "updated_ms": self.clock(),
             "name": r.spec.name,

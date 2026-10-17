@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from edgebook.engine.decide import Position, fee
+from edgebook.engine.decide import Position, fee, fill_fee
 from edgebook.engine.state import Level
 
 
@@ -69,8 +69,8 @@ class PaperAccount:
     day_start_equity: float = 0.0
     last_entry_ms: dict[str, int] = field(default_factory=dict)
     started_ms: int = 0
-    # (pnl, contracts) of every closed trade, kept in full (fills are capped on save)
-    closed: list[tuple[float, float]] = field(default_factory=list)
+    # (pnl, contracts, closed_ms) of every closed trade, kept in full (fills are capped on save)
+    closed: list[tuple[float, float, int]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.started_ms:
@@ -121,8 +121,9 @@ class PaperAccount:
             take = min(lvl.size, (budget - spent) // unit)
             if take <= 0:
                 break
-            spent += take * unit
-            fees += take * fee(lvl.price)
+            lvl_fee = fill_fee(lvl.price, take)
+            spent += take * lvl.price + lvl_fee
+            fees += lvl_fee
             qty += take
         if qty <= 0:
             return None
@@ -194,8 +195,9 @@ class PaperAccount:
             take = min(lvl.size, left - sold)
             if take <= 0:
                 break
-            proceeds += take * (lvl.price - fee(lvl.price))
-            fees += take * fee(lvl.price)
+            lvl_fee = fill_fee(lvl.price, take)
+            proceeds += take * lvl.price - lvl_fee
+            fees += lvl_fee
             sold += take
         if sold <= 0:
             return None
@@ -203,7 +205,7 @@ class PaperAccount:
         pnl = proceeds - cost_part
         self.cash += proceeds
         self.realized += pnl
-        self.closed.append((pnl, sold))
+        self.closed.append((pnl, sold, now_ms))
         if sold >= h.contracts:
             del self.holdings[ticker]
         else:
@@ -233,7 +235,7 @@ class PaperAccount:
         pnl = payout - h.cost
         self.cash += payout
         self.realized += pnl
-        self.closed.append((pnl, h.contracts))
+        self.closed.append((pnl, h.contracts, now_ms))
         f = Fill(
             now_ms,
             ticker,
@@ -279,10 +281,15 @@ class PaperAccount:
         acct.holdings = {k: Holding(**v) for k, v in d["holdings"].items()}
         acct.fills = [Fill(**f) for f in d["fills"]]
         acct.equity_series = [(int(t), float(e)) for t, e in d["equity_series"]]
+        # older files stored (pnl, contracts) or no record at all: recover times from the fills
+        when = {(f.pnl, f.contracts): f.ts_ms for f in acct.fills if f.pnl is not None}
         if "closed" in d:
-            acct.closed = [(float(p), float(n)) for p, n in d["closed"]]
-        else:  # files from before the full record: rebuild from the fills kept
-            acct.closed = [(f.pnl, f.contracts) for f in acct.fills if f.pnl is not None]
+            acct.closed = [
+                (float(e[0]), float(e[1]), int(e[2]) if len(e) > 2 else when.get((e[0], e[1]), 0))
+                for e in d["closed"]
+            ]
+        else:
+            acct.closed = [(f.pnl, f.contracts, f.ts_ms) for f in acct.fills if f.pnl is not None]
         return acct
 
     def save(self, path: Path) -> None:

@@ -55,10 +55,27 @@ jobs:
       - run: docker build -t edgebook:ci .
       - run: docker run --rm edgebook:ci python -c "import edgebook.app.cli"
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run check
+      - run: npm audit
+
   # Single required check for branch protection; add jobs above, not here.
   ci-ok:
     if: always()
-    needs: [lint, typecheck, test, audit, docker]
+    needs: [lint, typecheck, test, audit, docker, frontend]
     runs-on: ubuntu-latest
     steps:
       - run: |
