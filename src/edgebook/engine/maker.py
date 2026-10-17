@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from edgebook.core.types import LiquidityRole
-from edgebook.engine.decide import Call, fee
+from edgebook.engine.decide import Call, fee, fill_fee
 from edgebook.engine.paper import Fill, PaperAccount
 from edgebook.engine.state import LiveState
 
@@ -97,7 +97,7 @@ class MakerBook:
                 o.side,
                 take,
                 o.price,
-                fee(o.price, MAKER),
+                fill_fee(o.price, take, MAKER) / take,
                 t.ts_ms,
                 f"Resting {'UP' if o.side == 'yes' else 'DOWN'} bid at {o.price:.2f} filled "
                 f"(fair value {o.fair:.2f}).",
@@ -158,3 +158,81 @@ class MakerBook:
         queue = sum(lv.size for lv in state.bids(tk, side) if abs(lv.price - q) < 1e-9)
         self.orders[tk] = RestingOrder(tk, side, q, contracts, queue, now_ms, fair_side)
         return self.orders[tk]
+
+
+# ---------------------------------------------------------------- long-shot seller
+
+
+@dataclass(frozen=True)
+class LongshotConfig:
+    """Sell overpriced long shots as a maker (rest a DOWN bid that joins the UP ask).
+
+    Evidence (research.longshot, 30-day backfill + recorded trades): YES contracts
+    asked at 2-15c win less often than their price, and makers selling them
+    earned roughly +1 to +4c per contract after fees.
+    """
+
+    min_ask: float = 0.02  # UP (YES) ask band that counts as a long shot
+    max_ask: float = 0.15
+    min_secs_left: float = 300.0
+    max_secs_left: float = 3600.0
+    max_event_cost: float = 15_000.0  # all strikes of one close move together: cap the sum
+
+
+def longshot_quote(call: Call, cfg: LongshotConfig) -> tuple[str, float, float] | None:
+    """(side, bid price, fair of that side) for selling this market's long shot, or None.
+
+    Sells UP when UP is the long shot (rest a DOWN bid at 1 - UP ask), or DOWN when
+    DOWN is (rest an UP bid at 1 - DOWN ask). Never sells a long shot that fair value
+    says is worth at least its ask.
+    """
+    if not cfg.min_secs_left <= call.seconds_left <= cfg.max_secs_left:
+        return None
+    for long_ask, fair_long, our_side in (
+        (call.up_price, call.fair_up, "no"),
+        (call.down_price, None if call.fair_up is None else 1 - call.fair_up, "yes"),
+    ):
+        if long_ask is None or not cfg.min_ask <= long_ask <= cfg.max_ask:
+            continue
+        if fair_long is not None and fair_long >= long_ask:
+            return None  # fair value says this long shot is not overpriced
+        q = round(1 - long_ask, 2)
+        return our_side, q, 1 - (fair_long if fair_long is not None else long_ask)
+    return None
+
+
+def quote_longshot(
+    book: MakerBook,
+    state: LiveState,
+    account: PaperAccount,
+    call: Call,
+    cfg: LongshotConfig,
+    equity: float,
+    now_ms: int,
+    allowed: bool,
+    event_room: float,
+) -> RestingOrder | None:
+    """Place, keep or cancel this market's long-shot sale (a resting bid on the favourite)."""
+    tk = call.ticker
+    o = book.orders.get(tk)
+    held = account.holdings.get(tk)
+    if held is not None:
+        if not allowed or o is None or o.side != held.side:
+            book.cancel(tk)
+            return None
+        return o
+    q = longshot_quote(call, cfg) if allowed and account.can_enter(tk, now_ms) else None
+    if q is None:
+        book.cancel(tk)
+        return None
+    side, price, fair_side = q
+    if o is not None and o.side == side and abs(o.price - price) < 1e-9:
+        return o  # unchanged: keep our place in the queue
+    unit = price + fee(price, MAKER)
+    contracts = min(account.budget(equity), max(event_room, 0.0)) // unit
+    if contracts <= 0:
+        book.cancel(tk)
+        return None
+    queue = sum(lv.size for lv in state.bids(tk, side) if abs(lv.price - price) < 1e-9)
+    book.orders[tk] = RestingOrder(tk, side, price, contracts, queue, now_ms, fair_side)
+    return book.orders[tk]

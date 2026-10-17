@@ -90,6 +90,16 @@ def fee(price: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
     return _fee(round(min(max(price, 0.0), 1.0), 4), role)
 
 
+def fill_fee(price: float, contracts: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
+    """Fee for one fill of ``contracts`` at ``price``: Kalshi rounds the fill's total up to
+    a cent once, not each contract (``fee`` is the 1-contract, worst-case rounding)."""
+    qty = Decimal(f"{contracts:.6f}")  # fractional fills exist; never round a fill to zero
+    if qty <= 0:
+        return 0.0
+    p = min(max(price, 0.0), 1.0)
+    return float(trade_fee(qty, Decimal(f"{p:.4f}"), role))
+
+
 @lru_cache(maxsize=4096)
 def _fee(p: float, role: LiquidityRole) -> float:
     return float(trade_fee(1, Decimal(f"{p:.4f}"), role))

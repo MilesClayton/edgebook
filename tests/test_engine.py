@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from edgebook.engine.decide import EngineConfig, Position, evaluate, fair_up, fee
+from edgebook.engine.decide import EngineConfig, Position, evaluate, fair_up, fee, fill_fee
 from edgebook.engine.loop import LiveEngine
 from edgebook.engine.paper import PaperAccount, RiskConfig
 from edgebook.engine.state import Level, LiveState, MarketInfo
@@ -181,10 +181,12 @@ def test_paper_account_walks_depth_and_settles(tmp_path: Path) -> None:
     asks = [Level(0.50, 1000), Level(0.52, 100_000), Level(0.70, 100_000)]
     f = acct.buy("M", "yes", asks, max_price=0.60, equity=500_000, now_ms=NOW, reason="test")
     assert f is not None
-    cost = 1000 * (0.50 + fee(0.50))
-    extra = (5000 - cost) // (0.52 + fee(0.52))
-    assert f.contracts == 1000 + extra  # budget = 1% of equity, never above max_price
-    assert acct.cash == pytest.approx(500_000 - cost - extra * (0.52 + fee(0.52)))
+    extra = f.contracts - 1000  # the rest came from the 0.52 level, never the 0.70 one
+    fees = fill_fee(0.50, 1000) + fill_fee(0.52, extra)  # rounded up once per fill
+    assert f.fees == pytest.approx(fees)
+    assert 1000 * 0.50 + extra * 0.52 + fees <= 5000  # budget = 1% of equity
+    assert extra >= (5000 - 1000 * (0.50 + fee(0.50))) // (0.52 + fee(0.52))
+    assert acct.cash == pytest.approx(500_000 - 1000 * 0.50 - extra * 0.52 - fees)
     assert acct.buy("M", "yes", asks, 0.6, 500_000, NOW + 60_000, "again") is None  # no averaging
     assert acct.buy("N", "no", asks, 0.6, 500_000, NOW, "x") is not None
     assert acct.buy("N2", "no", asks, 0.6, 500_000, NOW, "x") is not None  # different market ok

@@ -2,10 +2,13 @@
 // Proxies the JSON store served by the Fly recorder. Market/model kinds are
 // public there; the trade log needs DASHBOARD_TOKEN (set it in Vercel env to
 // show trades). The token, if set, stays server-side.
+import { requireAccess } from "../lib/access.js";
 const KINDS = new Set(["snapshot", "research", "calibration", "trades", "live", "paper", "strategies"]);
 const DEFAULT_STORE = "https://edgebook-recorder.fly.dev";
 
 export default async function handler(req, res) {
+  if (!await requireAccess(req, res)) return;
+  if (req.method !== "GET") return res.status(405).json({ error: "GET required" });
   const kind = String(req.query.kind ?? "");
   if (!KINDS.has(kind)) return res.status(400).json({ error: "unknown kind" });
   const base = (process.env.FLY_DATA_URL || DEFAULT_STORE).replace(/\/$/, "");
