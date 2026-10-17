@@ -76,13 +76,46 @@ MARKETS = make_schema(
     ("result", pa.string()),
     ("expiration_value", pa.string()),
 )
+# Multi-exchange spot composite (Coinbase/Kraken/Bitstamp), for lead-lag research
+SPOT = make_schema(
+    ("recv_ts_ms", pa.int64()),
+    ("exchange_ts_ms", pa.int64()),
+    ("mid", pa.float64()),
+    ("bid", pa.float64()),
+    ("ask", pa.float64()),
+    ("bid_size", pa.float64()),
+    ("ask_size", pa.float64()),
+    ("venues_active", pa.int32()),
+    ("cross_exchange_spread_bps", pa.float64()),
+    ("trade_flow_imbalance", pa.float64()),
+    ("book_imbalance", pa.float64()),
+)
+
 SCHEMAS: dict[str, pa.Schema] = {
     "book": BOOK,
     "trades": TRADES,
     "index": INDEX_VALUES,
     "markets": MARKETS,
     "settlements": MARKETS,
+    "spot": SPOT,
 }
+
+
+def spot_row(snap: Any, recv_ts_ms: int) -> Row:
+    """One row of the exchange composite (a ``feeds.types.CompositeSnapshot``)."""
+    return {
+        "recv_ts_ms": recv_ts_ms,
+        "exchange_ts_ms": snap.timestamp_ms,
+        "mid": snap.mid,
+        "bid": snap.bid,
+        "ask": snap.ask,
+        "bid_size": snap.bid_size,
+        "ask_size": snap.ask_size,
+        "venues_active": sum(1 for v in snap.venues.values() if v.active),
+        "cross_exchange_spread_bps": snap.cross_exchange_spread_bps,
+        "trade_flow_imbalance": snap.trade_flow_imbalance,
+        "book_imbalance": snap.book_imbalance,
+    }
 
 
 def _q(value: Decimal | None, places: str) -> Decimal | None:

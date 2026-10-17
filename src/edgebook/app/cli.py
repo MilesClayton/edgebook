@@ -15,6 +15,7 @@ import dataclasses
 import json
 import logging
 import sys
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from edgebook.live.signals import LivePricer, Signal, signals
 from edgebook.live.snapshot import SnapshotBuilder
 from edgebook.publish import clean, publish
 from edgebook.recorder import http as dashboard_http
+from edgebook.recorder.rows import spot_row
 from edgebook.recorder.run import Recorder
 from edgebook.recorder.sink import ParquetSink
 from edgebook.research import calibrate as calib
@@ -44,6 +46,7 @@ from edgebook.venues.kalshi.rest import KalshiRest
 from edgebook.venues.kalshi.ws import KALSHI_WS_URLS, KalshiWebSocket
 
 log = logging.getLogger(__name__)
+SPOT_ROW_EVERY_MS = 200
 
 
 def signer_from(settings: Settings) -> KalshiSigner:
@@ -92,8 +95,13 @@ def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEn
             await asyncio.sleep(20.0)
 
     async def exchanges_loop() -> None:
+        last_row_ms = 0
         async for update in spot.updates():
             state.set_composite(update.snapshot, update.snapshot.timestamp_ms)
+            recv = int(time.time() * 1000)
+            if recv - last_row_ms >= SPOT_ROW_EVERY_MS:  # record for lead-lag research
+                last_row_ms = recv
+                recorder.sink.add("spot", spot_row(update.snapshot, recv))
 
     recorder.on_message = state.on_message
     recorder.on_market = state.set_market
