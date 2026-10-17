@@ -25,7 +25,8 @@
   </section>
   <section>
     <h2>Ask Jev</h2>
-    <label>Market ticker<input id="ticker" autocomplete="off" placeholder="KXBTC15M-… (or use the panel on a Kalshi page)"></label>
+    <label>Market<input id="ticker" autocomplete="off" placeholder="Filled with the current BTC 15-minute market"></label>
+    <p class="muted" id="ticker-hint"></p>
     <label>Contracts<input id="quantity" type="number" min="0.01" step="0.01" value="1.00"></label>
     <button id="review" disabled>Ask Jev</button>
     <p class="muted">Estimated edge uses the engine forecast, live quote, fees and a latency buffer. It is not a proven trading advantage.</p>
