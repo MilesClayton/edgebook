@@ -205,10 +205,13 @@ def test_paper_account_walks_depth_and_settles(tmp_path: Path) -> None:
 
 
 def test_daily_loss_limit_halts_entries(tmp_path: Path) -> None:
-    acct = PaperAccount(RiskConfig(starting_cash=1000))
+    acct = PaperAccount(RiskConfig(starting_cash=1000, daily_loss_limit=0.05))
     acct.roll_day("2026-10-16", 1000)
     assert acct.halted(940)
     assert not acct.halted(960)
+    unlimited = PaperAccount(RiskConfig(starting_cash=1000))  # default: no daily stop
+    unlimited.roll_day("2026-10-16", 1000)
+    assert not unlimited.halted(10)
 
 
 def test_engine_tick_trades_publishes_and_settles(tmp_path: Path) -> None:

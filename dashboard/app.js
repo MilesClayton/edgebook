@@ -430,7 +430,7 @@ async function paper(root) {
     { label: "Profit / contract (95% range)", get: (a) => centsCI(a.per_contract), tip: "Average result per contract over closed trades, after fees, with its 95% confidence range in cents." },
     { label: "Verdict", get: (a) => verdict(a.per_contract)[0], tip: "Profitable only if the whole 95% range is above zero; needs at least 30 closed trades to judge." },
     { label: "Open", get: (a) => `${a.holdings.length} pos${a.resting.length ? ` · ${a.resting.length} bids` : ""}`, tip: "Open positions, plus resting bids for the maker strategy" },
-    { label: "Status", get: (a) => (a.halted ? "PAUSED" : "Trading"), tip: "Entries pause for the rest of the UTC day after a 5% daily loss." },
+    { label: "Status", get: (a) => (a.halted ? "PAUSED" : "Trading"), tip: "Trading unless a daily loss limit is set and hit (none is set: paper accounts trade through losing days)." },
   ], accts, (a) => (a.name === paperSel ? "sel" : ""));
   cmp.querySelectorAll("tbody tr").forEach((tr, i) => {
     tr.style.cursor = "pointer";
@@ -462,7 +462,7 @@ function paperAccount(root, p) {
     card("Realized P&L", fmt.usd(p.realized, 0), `${fmt.n(p.closed_trades)} closed trades`, "Profit or loss locked in by selling or by markets settling."),
     card("Profit / contract", p.per_contract?.mean == null ? "–" : fmt.cents(p.per_contract.mean), vtext, "Average result per contract over closed trades after fees. The verdict uses the 95% confidence range.", vtone === "good" ? "good" : vtone === "bad" ? "bad" : ""),
     card("Win rate", p.win_rate == null ? "–" : fmt.pct(p.win_rate), "closed trades in profit", "Share of closed trades that made money. Not the goal by itself: a strategy can win often and still lose money."),
-    card("Status", p.halted ? "PAUSED" : "Trading", p.halted ? "daily loss limit hit" : `risk ${(p.risk.max_risk_per_trade * 100).toFixed(0)}%/trade, ≤ ${fmt.usd(p.risk.max_per_market, 0)}/market`, "Entries pause for the rest of the UTC day if the account drops 5% from its start-of-day value.", p.halted ? "bad" : "good"),
+    card("Status", p.halted ? "PAUSED" : "Trading", p.halted ? "daily loss limit hit" : `risk ${(p.risk.max_risk_per_trade * 100).toFixed(0)}%/trade, ≤ ${fmt.usd(p.risk.max_per_market, 0)}/market${p.risk.daily_loss_limit == null ? ", no daily limit" : ""}`, p.risk.daily_loss_limit == null ? "No daily loss limit: the account keeps trading through losing days." : `Entries pause for the rest of the UTC day if the account drops ${(p.risk.daily_loss_limit * 100).toFixed(0)}% from its start-of-day value.`, p.halted ? "bad" : "good"),
   ));
   const eq = p.equity_series ?? [];
   if (!p.name && eq.length > 1) {
