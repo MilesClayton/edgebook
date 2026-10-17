@@ -26,7 +26,8 @@ class RiskConfig:
     max_risk_per_trade: float = 0.01  # fraction of equity spent per entry
     max_per_market: float = 25_000.0  # $ cost basis cap per market
     max_open_markets: int = 6
-    daily_loss_limit: float = 0.05  # fraction of start-of-day equity
+    # fraction of start-of-day equity that pauses entries for the day; None = no daily stop
+    daily_loss_limit: float | None = None
     cooldown_s: float = 30.0
 
 
@@ -90,7 +91,8 @@ class PaperAccount:
         return total
 
     def halted(self, equity: float) -> bool:
-        return equity < self.day_start_equity * (1 - self.risk.daily_loss_limit)
+        limit = self.risk.daily_loss_limit
+        return limit is not None and equity < self.day_start_equity * (1 - limit)
 
     # ---- trading -----------------------------------------------------------
     def roll_day(self, day: str, equity: float) -> None:
