@@ -10,6 +10,7 @@ let ready = false;
 let busy = false;
 let status = null;
 let saved = { base: "", passcode: "" };
+let tickerTyped = false; // you typed a ticker yourself: don't overwrite it
 
 async function request(path, body) {
   const base = validBase(saved.base);
@@ -88,6 +89,7 @@ element("connect").addEventListener("click", () => run(async () => {
   const permitted = await chrome.permissions.request({ origins: [base + "/*"] });
   if (!permitted) throw new Error("Dashboard access permission was not granted.");
   render(await request("/api/execution?action=status"));
+  await fillTicker();
   // remembered only after the password worked
   await chrome.storage.local.set({ base: saved.base, passcode: saved.passcode });
   element("passcode").value = "";
@@ -148,12 +150,33 @@ for (const action of ["pause", "reconcile", "resume"]) {
     render(await request("/api/execution?action=status"));
   }));
 }
+// The ticker box follows the current BTC 15-minute market (it rolls every 15 minutes)
+// unless you type one; clearing the box brings the auto-fill back.
+async function fillTicker() {
+  if (!saved.passcode) return;
+  const live = await request("/api/data?kind=live");
+  const fifteen = (live.data?.calls ?? []).find((c) => c.series === "KXBTC15M");
+  if (!fifteen) {
+    element("ticker-hint").textContent = "No BTC 15-minute market is open right now.";
+    return;
+  }
+  const close = new Date(live.data.updated_ms + fifteen.seconds_left * 1000);
+  element("ticker-hint").textContent = `Current BTC 15-minute market, closes ${close.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  if (!tickerTyped || !element("ticker").value.trim()) {
+    tickerTyped = false;
+    if (element("ticker").value !== fifteen.ticker && proposal) await clearProposal();
+    element("ticker").value = fifteen.ticker;
+  }
+}
+
 for (const id of ["ticker", "quantity", "base"]) element(id).addEventListener("input", () => {
+  if (id === "ticker") tickerTyped = Boolean(element("ticker").value.trim());
   if (id === "base") ready = false;
   if (proposal) clearProposal();
   controls();
 });
 setInterval(controls, 500);
+setInterval(() => { fillTicker().catch(() => {}); }, 30000);
 
 const stored = await chrome.storage.local.get(["base", "passcode"]);
 saved = { base: stored.base || element("base").value, passcode: stored.passcode || "" };
@@ -166,5 +189,8 @@ if (pending && pending.base === saved.base && pending.proposal.expires_ms > Date
 }
 controls();
 if (saved.passcode) {
-  await run(async () => render(await request("/api/execution?action=status")));
+  await run(async () => {
+    render(await request("/api/execution?action=status"));
+    await fillTicker();
+  });
 }
