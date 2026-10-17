@@ -123,7 +123,7 @@ def test_replay_runs_live_strategies_on_recorded_data(tmp_path: Path) -> None:
     res = engine_replay.replay(d, tmp_path / "acct", DEFAULT_STRATEGIES, START_MS, end_ms)
     assert res.ticks == (end_ms - START_MS) // 1000
     by = {a["name"]: a for a in res.accounts}
-    assert set(by) == {"v1", "anchored", "maker"}
+    assert set(by) == {"v1", "anchored", "anchored50", "maker"}
     for name in ("v1", "anchored", "maker"):
         assert by[name]["closed_trades"] == 1, name  # bought UP, settled YES
         assert by[name]["equity"] > 500_000, name

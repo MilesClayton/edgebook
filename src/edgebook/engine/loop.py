@@ -68,6 +68,13 @@ DEFAULT_STRATEGIES: tuple[StrategySpec, ...] = (
         uses_fitted_weight=True,
     ),
     StrategySpec(
+        "anchored50",
+        "Anchored taker (50% model)",
+        "Like the anchored taker but the model gets half the weight, so it trades more often. "
+        "Tests whether the model adds anything once it is anchored to Kalshi's price.",
+        EngineConfig(model_weight=0.5, exit_mode="take_profit", take_profit=0.03),
+    ),
+    StrategySpec(
         "maker",
         "Maker (resting bids)",
         "Same anchored fair value, but never pays the ask: rests a bid 2¢+ below fair value "

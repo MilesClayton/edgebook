@@ -198,10 +198,10 @@ def test_engine_runs_strategies_side_by_side(tmp_path: Path) -> None:
     eng.tick()
     assert by["maker"].account.holdings["M"].contracts > 0
     eng.save()
-    for f in ("paper.json", "paper-anchored.json", "paper-maker.json"):
+    for f in ("paper.json", "paper-anchored.json", "paper-anchored50.json", "paper-maker.json"):
         assert (tmp_path / f).is_file()
     payload = eng.strategies_payload()
-    assert [a["name"] for a in payload["accounts"]] == ["v1", "anchored", "maker"]
+    assert [a["name"] for a in payload["accounts"]] == ["v1", "anchored", "anchored50", "maker"]
     assert payload["primary"] == "anchored"
     assert payload["fit"]["markets"] == 99
     live = eng.live_payload()
