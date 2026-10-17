@@ -14,7 +14,7 @@ from edgebook.core.types import LiquidityRole
 from edgebook.engine.decide import EngineConfig, Position, blend_fair, evaluate, fair_up, fee
 from edgebook.engine.loop import DEFAULT_STRATEGIES, LiveEngine, StrategySpec
 from edgebook.engine.maker import MakerBook, MakerConfig, maker_bid
-from edgebook.engine.paper import Holding, PaperAccount
+from edgebook.engine.paper import Holding, PaperAccount, RiskConfig
 from edgebook.engine.state import LiveState
 from edgebook.research import strategy_report as srep
 from tests.test_engine import NOW, msg, world
@@ -235,7 +235,13 @@ def test_held_market_missing_after_restart_still_settles(tmp_path: Path) -> None
 def test_maker_strategy_halts_and_waits(tmp_path: Path) -> None:
     spec = next(s for s in DEFAULT_STRATEGIES if s.mode == "maker")
     s = world(spot=82_000.0)
-    eng = LiveEngine(s, tmp_path / "p.json", clock=lambda: NOW, strategies=[spec])
+    eng = LiveEngine(
+        s,
+        tmp_path / "p.json",
+        clock=lambda: NOW,
+        strategies=[spec],
+        risk=RiskConfig(daily_loss_limit=0.05),
+    )
     eng.account.day = "2026-10-16"
     eng.account.day_start_equity = 1_000_000.0  # way above equity -> halted
     eng.account.roll_day = lambda day, equity: None  # type: ignore[method-assign]

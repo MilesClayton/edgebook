@@ -96,6 +96,8 @@ class StrategyRunner:
         self.cfg = spec.cfg
         self.account_path = account_path
         self.account = PaperAccount.load(account_path, risk)
+        # risk limits come from code, not from whatever an older account file saved
+        self.account.risk = risk or RiskConfig()
         self.calls: list[Call] = []
         self.pending_settlement: set[str] = set()
         self.last_action: dict[str, str] = {}
