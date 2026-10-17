@@ -20,6 +20,9 @@ from typing import Any
 
 from aiohttp import web
 
+from edgebook.execution.http import add_routes
+from edgebook.execution.service import ExecutionService
+
 KINDS = frozenset({"snapshot", "research", "calibration", "trades", "live", "paper", "strategies"})
 # Market data and model output only; readable without the token. Writes, and the
 # bot's own trade log, always require it.
@@ -40,7 +43,14 @@ def write_kind(directory: Path, kind: str, data: Any) -> Path:
     return path
 
 
-def make_app(directory: Path, token: str) -> web.Application:
+def make_app(
+    directory: Path,
+    token: str,
+    execution: ExecutionService | None = None,
+    operator_token: str = "",
+    proposal_token: str = "",
+    disabled_reason: str = "Execution setup is disabled on this server.",
+) -> web.Application:
     expected = f"Bearer {token}".encode()
 
     def authorized(request: web.Request) -> bool:
@@ -84,11 +94,22 @@ def make_app(directory: Path, token: str) -> web.Application:
             web.post("/dashboard/{kind}", post_kind),
         ]
     )
+    add_routes(app, execution, operator_token, proposal_token, disabled_reason)
     return app
 
 
-async def serve(directory: Path, token: str, port: int = 8080) -> web.AppRunner:
-    runner = web.AppRunner(make_app(directory, token))
+async def serve(
+    directory: Path,
+    token: str,
+    port: int = 8080,
+    execution: ExecutionService | None = None,
+    operator_token: str = "",
+    proposal_token: str = "",
+    disabled_reason: str = "Execution setup is disabled on this server.",
+) -> web.AppRunner:
+    runner = web.AppRunner(
+        make_app(directory, token, execution, operator_token, proposal_token, disabled_reason)
+    )
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()  # noqa: S104 - Fly routes to the VM
     return runner

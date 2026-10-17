@@ -27,6 +27,8 @@ from edgebook.core.fees import trade_fee
 from edgebook.core.types import LiquidityRole
 from edgebook.engine.loop import DEFAULT_STRATEGIES, FITTED_WEIGHT_FILE, LiveEngine
 from edgebook.engine.state import LiveState
+from edgebook.execution.live_ledger import GuardError, LiveSettings
+from edgebook.execution.runtime import build_service
 from edgebook.feeds.run import MultiExchangeSpot
 from edgebook.history import coinbase
 from edgebook.history import kalshi as kalshi_history
@@ -121,8 +123,42 @@ async def record(settings: Settings) -> None:
     )
     if settings.dashboard_token is not None:
         store = settings.data_dir / "dashboard"
-        await dashboard_http.serve(
-            store, settings.dashboard_token.get_secret_value(), settings.dashboard_port
+        engine = attach_engine(settings, recorder, store)
+        execution_settings = LiveSettings()
+        execution = None
+        broker = None
+        owner = None
+        disabled_reason = "Execution is disabled in server settings."
+        if execution_settings.enabled:
+            try:
+                pem = (
+                    execution_settings.kalshi_private_key.get_secret_value().encode()
+                    if execution_settings.kalshi_private_key is not None
+                    else execution_settings.kalshi_private_key_path.expanduser().read_bytes()
+                    if execution_settings.kalshi_private_key_path is not None
+                    else None
+                )
+                if not execution_settings.kalshi_key_id or pem is None:
+                    raise GuardError("separate execution Kalshi credentials are missing")
+                execution, broker, owner = build_service(
+                    settings.data_dir / "execution",
+                    execution_settings,
+                    engine,
+                    execution_settings.kalshi_key_id,
+                    pem,
+                )
+                recorder.background.append(execution.run_reconciliation)
+            except (GuardError, OSError, ValueError) as error:
+                disabled_reason = str(error)
+                log.error("execution disabled: %s", disabled_reason)
+        runner = await dashboard_http.serve(
+            store,
+            settings.dashboard_token.get_secret_value(),
+            settings.dashboard_port,
+            execution,
+            execution_settings.api_token,
+            execution_settings.proposal_token,
+            disabled_reason,
         )
         builder = SnapshotBuilder(
             rest=recorder.rest,
@@ -135,8 +171,16 @@ async def record(settings: Settings) -> None:
             dashboard_http.write_kind(store, "snapshot", clean(await builder.build()))
 
         recorder.on_minute = write_snapshot
-        attach_engine(settings, recorder, store)
-    await recorder.run()
+        try:
+            await recorder.run()
+        finally:
+            await runner.cleanup()
+            if broker is not None:
+                await broker.close()
+            if owner is not None:
+                owner.close()
+    else:
+        await recorder.run()
 
 
 async def balance(settings: Settings) -> None:
@@ -320,6 +364,8 @@ async def trade_once(settings: Settings, args: argparse.Namespace) -> None:
     # Confirmation protects against accidental clicks; the viability gate protects
     # capital by requiring a separately measured, positive paper-trading result.
     assert_live_trading_allowed(settings)
+    if settings.env.value == "production":
+        raise SystemExit("production trade-once is retired; use the confirmed execution API")
     rest = KalshiRest(settings.kalshi_trade_url, signer=signer_from(settings))
     try:
         resp = await rest.create_order(order)

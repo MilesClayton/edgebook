@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edgebook</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><strong>EDGEBOOK</strong><span id="mode">Setup required</span></header>
+  <p class="muted">Jev decisions · guarded Kalshi orders</p>
+  <label>Dashboard address<input id="base" type="url" value="https://dashboard-ten-murex-53tctwc6fk.vercel.app" autocomplete="off"></label>
+  <label>Dashboard passcode<input id="passcode" type="password" autocomplete="off" placeholder="Kept only while this popup is open"></label>
+  <button id="connect">Connect / refresh</button>
+  <section id="account" hidden>
+    <p id="state"></p>
+    <div class="metrics"><div>Purchase budget left<strong id="budget">—</strong></div><div>Open exposure<strong id="exposure">—</strong></div><div>Realized loss<strong id="loss">—</strong></div></div>
+    <p class="muted" id="caps"></p>
+    <p id="scope" class="muted"></p>
+    <h2>Positions</h2><div id="positions">No routed positions.</div>
+    <div class="row"><button id="pause" class="secondary">Pause</button><button id="reconcile" class="secondary">Reconcile</button></div>
+    <label class="check"><input id="resume-check" type="checkbox">Enable user-confirmed submissions for this session.</label>
+    <button id="resume" class="secondary">Resume confirmed trading</button>
+  </section>
+  <section>
+    <h2>Decision review</h2>
+    <label>Exact market ticker<input id="ticker" autocomplete="off" placeholder="KXBTC15M-…"></label>
+    <label>Contracts<input id="quantity" type="number" min="0.01" step="0.01" value="1.00"></label>
+    <button id="review" disabled>Ask Jev for a bounded decision</button>
+    <p class="muted">Estimated edge uses the engine forecast, executable quote, reserved fees and latency buffer. It is not a proven trading advantage.</p>
+  </section>
+  <section id="proposal" hidden>
+    <h2>Unsubmitted proposal</h2>
+    <pre id="proposal-details"></pre>
+    <label class="check"><input id="confirm-check" type="checkbox">I confirm this exact market, side, quantity and limit price.</label>
+    <button id="confirm" disabled>Confirm and submit IOC order</button>
+  </section>
+  <p id="message" role="status" aria-live="polite">Connect to view actual backend state. Unattended trading is disabled.</p>
+  <details><summary>Recent routed orders</summary><pre id="orders">No status loaded.</pre></details>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

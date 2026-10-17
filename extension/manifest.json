@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Edgebook",
+  "version": "0.2.0",
+  "description": "Review Jev decisions, confirm bounded Kalshi IOC orders, and monitor the persistent execution backend.",
+  "action": { "default_popup": "popup.html", "default_title": "Edgebook trading controls" },
+  "permissions": ["storage"],
+  "host_permissions": ["https://dashboard-ten-murex-53tctwc6fk.vercel.app/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+}
