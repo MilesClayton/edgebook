@@ -4,6 +4,7 @@ python -m edgebook record    # stream prod market data to Parquet (needs a prod 
 python -m edgebook balance   # signed call to verify a key against EDGEBOOK_ENV
 python -m edgebook markets   # list open markets per series (public, no key)
 python -m edgebook strategy-report [--write-weight]  # paper results + model-weight fit
+python -m edgebook replay-engine --start 2026-10-16T16:00 --hours 3  # live engine on recorded data
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from edgebook.recorder import http as dashboard_http
 from edgebook.recorder.run import Recorder
 from edgebook.recorder.sink import ParquetSink
 from edgebook.research import calibrate as calib
-from edgebook.research import features, strategies
+from edgebook.research import engine_replay, features, strategies
 from edgebook.research import strategy_report as srep
 from edgebook.venues.kalshi.auth import KalshiSigner
 from edgebook.venues.kalshi.models import CreateOrderV2Request
@@ -382,6 +383,52 @@ async def strategy_report(settings: Settings) -> None:
             print(f"wrote model_weight={fit.model_weight}; restart the engine to use it")
 
 
+async def replay_engine(settings: Settings, args: argparse.Namespace) -> None:
+    """Run every default strategy through recorded data (UTC start, N hours)."""
+    start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = start_ms + int(args.hours * 3_600_000)
+    out_dir = settings.data_dir / "replay" / start.strftime("%Y%m%dT%H%M")
+    if out_dir.exists():
+        for f in out_dir.glob("paper*.json"):
+            f.unlink()  # a fresh replay, never resumed accounts
+    result = await asyncio.to_thread(
+        engine_replay.replay, settings.data_dir, out_dir, DEFAULT_STRATEGIES, start_ms, end_ms
+    )
+    results = {
+        tk: m.result for tk, m in engine_replay.load_markets(settings.data_dir).items() if m.result
+    }
+    summary = []
+    for acct in result.accounts:
+        rep = srep.account_report(acct["name"], acct, results)
+        summary.append(
+            {
+                "name": acct["name"],
+                "equity": acct["equity"],
+                "return_pct": acct["return_pct"],
+                "closed_trades": acct["closed_trades"],
+                "per_contract": dataclasses.asdict(rep.per_contract),
+                "hold_per_contract": dataclasses.asdict(rep.hold_per_contract),
+                "model_said": rep.model_said,
+                "won": rep.won,
+                "paid": rep.paid,
+            }
+        )
+    print(
+        json.dumps(
+            clean(
+                {
+                    "start": args.start,
+                    "hours": args.hours,
+                    "ticks": result.ticks,
+                    "strategies": summary,
+                }
+            ),
+            indent=2,
+        )
+    )
+
+
 COMMANDS = {
     "record": record,
     "balance": balance,
@@ -395,7 +442,9 @@ DAY_COMMANDS = {"backfill": backfill, "calibrate": calibrate, "research": resear
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="edgebook")
-    parser.add_argument("command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once"]))
+    parser.add_argument(
+        "command", choices=sorted([*COMMANDS, *DAY_COMMANDS, "trade-once", "replay-engine"])
+    )
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--series", default="KXBTC15M")
     parser.add_argument("--execute", action="store_true", help="actually place the order")
@@ -408,6 +457,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--write-weight", action="store_true", help="strategy-report: save the fitted weight"
     )
+    parser.add_argument("--start", help="replay-engine: UTC start, e.g. 2026-10-16T16:00")
+    parser.add_argument("--hours", type=float, default=3.0, help="replay-engine: window length")
     args = parser.parse_args(argv)
     global PUBLISH, WRITE_WEIGHT
     PUBLISH = args.publish
@@ -421,6 +472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = Settings()
         if args.command == "trade-once":
             asyncio.run(trade_once(settings, args))
+        elif args.command == "replay-engine":
+            asyncio.run(replay_engine(settings, args))
         elif args.command in DAY_COMMANDS:
             asyncio.run(DAY_COMMANDS[args.command](settings, args.days))
         else:
