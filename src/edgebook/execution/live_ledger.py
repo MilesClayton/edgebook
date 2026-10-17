@@ -40,7 +40,7 @@ class StrictModel(BaseModel):
 
 
 class Intent(StrictModel):
-    ticker: str = Field(pattern=r"^[A-Z0-9][A-Z0-9-]{1,99}$")
+    ticker: str = Field(pattern=r"^[A-Z0-9][A-Z0-9.-]{1,99}$")  # hourly strikes contain "."
     action: Literal["buy", "sell"]
     side: Literal["yes", "no"]
     quantity: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,4})\.[0-9]{2}$")
@@ -122,7 +122,7 @@ class ModelDecision(StrictModel):
 
 
 class ReviewRequest(StrictModel):
-    ticker: str = Field(pattern=r"^[A-Z0-9][A-Z0-9-]{1,99}$")
+    ticker: str = Field(pattern=r"^[A-Z0-9][A-Z0-9.-]{1,99}$")  # hourly strikes contain "."
     quantity: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,4})\.[0-9]{2}$")
 
 

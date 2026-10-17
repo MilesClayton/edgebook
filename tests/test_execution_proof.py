@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from edgebook.execution.live_ledger import GuardError, LiveSettings
+from edgebook.execution.live_ledger import GuardError, LiveSettings, ReviewRequest
 from edgebook.execution.proof import paper_proof
 from tests.test_execution_service import Harness
 
@@ -35,6 +35,15 @@ def test_paper_proof_needs_trades_days_and_profit_beyond_luck() -> None:
     assert empty["mean_per_contract"] is None
     undated = paper_proof([(0.05, 1.0, 0)] * 300, 200, 5)  # times unknown: no days counted
     assert undated["days"] == 0
+
+
+def test_hourly_strike_tickers_are_accepted() -> None:
+    # hourly tickers contain "." (strike 81999.99); the original pattern rejected all of them
+    assert ReviewRequest(ticker="KXBTCD-26OCT1717-T81999.99", quantity="1.00").ticker.endswith(
+        ".99"
+    )
+    with pytest.raises(ValueError, match="pattern"):
+        ReviewRequest(ticker="kxbtcd lower", quantity="1.00")
 
 
 def test_gate_floors_cannot_be_configured_away() -> None:

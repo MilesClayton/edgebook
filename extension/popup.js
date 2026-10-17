@@ -84,6 +84,12 @@ element("connect").addEventListener("click", () => run(async () => {
   if (!permitted) throw new Error("Dashboard access permission was not granted.");
   await chrome.storage.local.set({ base });
   render(await request("/api/execution?action=status"));
+  // Kalshi page panel (background.js): opt-in, memory-only session storage
+  if (element("onpage").checked) {
+    await chrome.storage.session.set({ onpage: { base, passcode: element("passcode").value } });
+  } else {
+    await chrome.storage.session.remove("onpage");
+  }
 }));
 
 element("review").addEventListener("click", () => run(async () => {

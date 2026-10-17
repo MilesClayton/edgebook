@@ -474,6 +474,7 @@ class LiveEngine:
         cur = self.state.index_now()
         comp = self.state.composite
         maker = next((r for r in self.runners if r.spec.mode == "maker"), None)
+        longshot = next((r for r in self.runners if r.spec.mode == "longshot"), None)
         return {
             "updated_ms": t,
             "strategy": self.primary.spec.name,
@@ -492,6 +493,9 @@ class LiveEngine:
             "signal_log": list(self.signal_log)[-100:],
             "maker_orders": [asdict(o) for o in maker.maker.orders.values()]
             if maker is not None and maker.maker is not None
+            else [],
+            "longshot_orders": [asdict(o) for o in longshot.maker.orders.values()]
+            if longshot is not None and longshot.maker is not None
             else [],
         }
 

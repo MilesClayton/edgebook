@@ -84,6 +84,8 @@ def test_engine_longshot_seller_fills_and_settles(tmp_path: Path) -> None:
     [c] = eng.tick()
     assert c.action == "BID DOWN"
     assert "Selling the UP long shot at 0.04" in c.reason
+    [order] = eng.live_payload()["longshot_orders"]  # shown on Kalshi pages by the extension
+    assert (order["ticker"], order["side"], order["price"]) == (m.ticker, "no", 0.96)
     s.add_trade(m.ticker, 0.04, 800, "yes", NOW)  # YES buyers lift the long shot: queue, then us
     eng.tick()
     h = eng.account.holdings[m.ticker]

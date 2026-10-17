@@ -27,10 +27,17 @@ test("actual order state is distinct from proposal and unknown outcomes", () => 
   assert.match(text, /Jev decision confidence: 90.0% \(not settlement probability\)/);
 });
 
-test("extension contains no page scripting or broker/gateway credential surface", async () => {
+test("extension reads Kalshi pages only and has no broker/gateway credential surface", async () => {
   const manifest = JSON.parse(await readFile(new URL("../../extension/manifest.json", import.meta.url)));
   assert.deepEqual(manifest.permissions, ["storage"]);
-  assert.equal(manifest.content_scripts, undefined);
+  assert.deepEqual(manifest.content_scripts, [{
+    matches: ["https://kalshi.com/*", "https://*.kalshi.com/*"],
+    js: ["kalshi-core.js", "kalshi.js"], run_at: "document_idle",
+  }]);
+  const page = await readFile(new URL("../../extension/kalshi.js", import.meta.url), "utf8");
+  // the page panel never scripts Kalshi's own UI or reaches the order route
+  assert.ok(!/\.click\(|dispatchEvent|querySelector|innerHTML|execution\?action|confirmation_token/.test(page));
+  assert.match(page, /attachShadow\(\{ mode: "closed" \}\)/);
   const source = await readFile(new URL("../../extension/popup.js", import.meta.url), "utf8");
   assert.ok(!/kalshi\.com|AI_GATEWAY_API_KEY|KALSHI-ACCESS|executeScript|\.click\(/.test(source));
   assert.match(source, /confirmation_token: proposal.confirmation_token/);
