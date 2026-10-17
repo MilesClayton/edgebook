@@ -63,8 +63,14 @@ class ExecutionService:
         self.lock = asyncio.Lock()
 
     def require_proof(self, route: str) -> None:
-        """New entries need a paper-proven strategy; exits never do (they cut risk)."""
+        """New entries need a paper-proven strategy; exits never do (they cut risk).
+
+        The owner may waive the gate; every entry checked while waived is audited with the
+        current (unproven) paper record so the decision stays on file."""
         proof = self.proof()
+        if not self.settings.require_paper_proof:
+            self.ledger.audit(self.clock(), "paper_proof_waived", {"route": route, **proof})
+            return
         if proof.get("proven") is not True:
             self.ledger.audit(self.clock(), "entry_blocked_unproven", {"route": route, **proof})
             raise GuardError(
@@ -154,7 +160,11 @@ class ExecutionService:
                 "configured": True,
                 "enabled": self.settings.enabled,
                 "environment": self.settings.environment,
-                "paper_proof": {"strategy": self.settings.proof_strategy, **self.proof()},
+                "paper_proof": {
+                    "strategy": self.settings.proof_strategy,
+                    "required": self.settings.require_paper_proof,
+                    **self.proof(),
+                },
                 "orders": self.ledger.orders(),
                 "scope": (
                     "Caps cover orders routed here; separate manual trades are outside these caps."
