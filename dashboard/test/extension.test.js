@@ -95,6 +95,10 @@ test("popup remembers the password, auto-connects, resumes and buys in one click
       realized_loss: "0", positions: [], orders: [],
       limits: { purchase_spend_cents: 500, open_exposure_cents: 300, realized_loss_cents: 300, order_debit_cents: 100 },
     };
+    else if (url.endsWith("/api/data?kind=live")) result = { data: { updated_ms: Date.now(), calls: [
+      { ticker: "KXBTCD-26OCT1720-T81999.99", series: "KXBTCD", seconds_left: 900 },
+      { ticker: "KXBTC15M-26OCT171945-45", series: "KXBTC15M", seconds_left: 300 },
+    ] } };
     else if (url.endsWith("action=resume")) { paused = false; result = {}; }
     else if (url.endsWith("/api/jev-proposal")) result = proposal;
     else if (url.endsWith("action=confirm")) result = {
@@ -123,6 +127,9 @@ test("popup remembers the password, auto-connects, resumes and buys in one click
   await popup.open();
   assert.ok(sent[0].url.endsWith("action=status"));
   assert.equal(sent[0].auth, `Basic ${btoa("edgebook:fixture-password")}`);
+  // the ticker box follows the current BTC 15-minute market, no typing needed
+  assert.equal(popup.element("ticker").value, "KXBTC15M-26OCT171945-45");
+  assert.match(popup.element("ticker-hint").textContent, /Current BTC 15-minute market, closes/);
   assert.equal(popup.element("review").disabled, true);  // paused
   assert.equal(popup.element("resume").disabled, false);
   await popup.element("resume").listeners.click();  // one click, no checkbox
@@ -132,6 +139,7 @@ test("popup remembers the password, auto-connects, resumes and buys in one click
   assert.equal(popup.element("confirm").disabled, false);
   assert.match(popup.element("confirm").textContent, /^Buy 1.00 YES at \$0.4000/);
   await popup.element("confirm").listeners.click();  // one Buy click sends it
+  assert.equal(sent.find((item) => item.url.endsWith("/api/jev-proposal")).body.ticker, "KXBTC15M-26OCT171945-45");
   const confirmation = sent.find((item) => item.url.endsWith("action=confirm")).body;
   assert.deepEqual(confirmation.intent, proposal.intent);
   assert.equal(confirmation.confirmed, true);
