@@ -5,7 +5,7 @@
   "description": "Edgebook's live calls on Kalshi BTC market pages, Jev decisions, and user-confirmed bounded Kalshi IOC orders.",
   "action": { "default_popup": "popup.html", "default_title": "Edgebook trading controls" },
   "permissions": ["storage"],
-  "host_permissions": ["https://edgebook-dashboard.vercel.app/*"],
+  "host_permissions": ["https://dashboard-ten-murex-53tctwc6fk.vercel.app/*"],
   "optional_host_permissions": ["https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
