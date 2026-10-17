@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from edgebook.engine.decide import Position, fee
+from edgebook.engine.decide import Position, fee, fill_fee
 from edgebook.engine.state import Level
 
 
@@ -121,8 +121,9 @@ class PaperAccount:
             take = min(lvl.size, (budget - spent) // unit)
             if take <= 0:
                 break
-            spent += take * unit
-            fees += take * fee(lvl.price)
+            lvl_fee = fill_fee(lvl.price, take)
+            spent += take * lvl.price + lvl_fee
+            fees += lvl_fee
             qty += take
         if qty <= 0:
             return None
@@ -194,8 +195,9 @@ class PaperAccount:
             take = min(lvl.size, left - sold)
             if take <= 0:
                 break
-            proceeds += take * (lvl.price - fee(lvl.price))
-            fees += take * fee(lvl.price)
+            lvl_fee = fill_fee(lvl.price, take)
+            proceeds += take * lvl.price - lvl_fee
+            fees += lvl_fee
             sold += take
         if sold <= 0:
             return None

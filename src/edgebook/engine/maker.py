@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from edgebook.core.types import LiquidityRole
-from edgebook.engine.decide import Call, fee
+from edgebook.engine.decide import Call, fee, fill_fee
 from edgebook.engine.paper import Fill, PaperAccount
 from edgebook.engine.state import LiveState
 
@@ -97,7 +97,7 @@ class MakerBook:
                 o.side,
                 take,
                 o.price,
-                fee(o.price, MAKER),
+                fill_fee(o.price, take, MAKER) / take,
                 t.ts_ms,
                 f"Resting {'UP' if o.side == 'yes' else 'DOWN'} bid at {o.price:.2f} filled "
                 f"(fair value {o.fair:.2f}).",

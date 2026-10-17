@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from edgebook.core.types import LiquidityRole
-from edgebook.engine.decide import Call, EngineConfig, evaluate, fee
+from edgebook.engine.decide import Call, EngineConfig, evaluate, fee, fill_fee
 from edgebook.engine.loop import DEFAULT_STRATEGIES, LiveEngine
 from edgebook.engine.maker import LongshotConfig, MakerBook, longshot_quote, quote_longshot
 from edgebook.engine.paper import PaperAccount
@@ -99,7 +99,7 @@ def test_engine_longshot_seller_fills_and_settles(tmp_path: Path) -> None:
     eng.tick()
     assert eng.pending_settlement == {m.ticker}
     eng.settle(m.ticker, "no")
-    assert eng.account.realized == pytest.approx(300 * (1 - 0.96 - fee(0.96, MAKER)))
+    assert eng.account.realized == pytest.approx(300 * (1 - 0.96) - fill_fee(0.96, 300, MAKER))
     assert eng.paper_payload()["risk"]["max_open_markets"] == 40
 
 

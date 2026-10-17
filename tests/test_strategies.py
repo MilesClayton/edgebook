@@ -11,7 +11,15 @@ import pytest
 from edgebook.app import cli
 from edgebook.config import Settings
 from edgebook.core.types import LiquidityRole
-from edgebook.engine.decide import EngineConfig, Position, blend_fair, evaluate, fair_up, fee
+from edgebook.engine.decide import (
+    EngineConfig,
+    Position,
+    blend_fair,
+    evaluate,
+    fair_up,
+    fee,
+    fill_fee,
+)
 from edgebook.engine.loop import DEFAULT_STRATEGIES, LiveEngine, StrategySpec
 from edgebook.engine.maker import MakerBook, MakerConfig, maker_bid
 from edgebook.engine.paper import Holding, PaperAccount, RiskConfig
@@ -134,7 +142,7 @@ def test_maker_fills_only_from_real_prints_after_the_queue() -> None:
     [f1] = book.match(s, acct)
     assert f1.contracts == 100
     assert f1.price == 0.48
-    assert f1.fees == pytest.approx(100 * fee(0.48, MAKER_FEE))
+    assert f1.fees == pytest.approx(fill_fee(0.48, 100, MAKER_FEE))  # rounded once per fill
     s.add_trade("M", 0.47, 50, "no", NOW + 2)  # through our price
     [f2] = book.match(s, acct)
     assert f2 is f1  # same order: one trade record, not one per print
@@ -142,7 +150,9 @@ def test_maker_fills_only_from_real_prints_after_the_queue() -> None:
     assert len(acct.fills) == 1
     h = acct.holdings["M"]
     assert h.contracts == 150
-    assert h.cost == pytest.approx(150 * (0.48 + fee(0.48, MAKER_FEE)))
+    assert h.cost == pytest.approx(
+        150 * 0.48 + fill_fee(0.48, 100, MAKER_FEE) + fill_fee(0.48, 50, MAKER_FEE)
+    )
     assert acct.cash == pytest.approx(500_000 - h.cost)
     # holding open: the same order keeps working, it never flips side
     assert book.quote(s, acct, call, MakerConfig(), acct.cash, NOW, allowed=True) is o
