@@ -3,7 +3,11 @@
 Entry calls: BUY UP, BUY DOWN, or NO TRADE (with the first reason that blocked it).
 Position calls: HOLD or SELL, by comparing what selling pays *now* (best bid
 minus fee) with what the position is expected to be worth at settlement (the
-model probability). Nothing here places orders.
+fair value). Nothing here places orders.
+
+Fair value blends the model with Kalshi's own price (``model_weight``): day-one
+paper results showed the market's price was the better forecast, so the model
+only nudges it.
 
 "UP" means YES on an up/down or "above $K" market; "DOWN" means NO.
 """
@@ -13,6 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from decimal import Decimal
+from functools import lru_cache
 
 from edgebook.core.fees import trade_fee
 from edgebook.core.types import LiquidityRole
@@ -35,6 +40,11 @@ class EngineConfig:
     sell_hysteresis: float = 0.005
     nu: float = 4.0  # Student-t tails: best-calibrated variant in our tests
     min_sigma_per_s: float = 3.5e-5  # ~0.027%/min floor: quiet-market BTC, never calmer
+    model_weight: float = 1.0  # 0 = trust Kalshi's mid, 1 = trust the model (logit blend)
+    # "fair": sell once the bid reaches fair value; "take_profit": hold to the result
+    # unless the bid pays take_profit more than fair value
+    exit_mode: str = "fair"
+    take_profit: float = 0.03
 
 
 @dataclass(frozen=True)
@@ -54,7 +64,8 @@ class Call:
     strike: float | None
     index: float | None
     index_age_ms: int | None
-    fair_up: float | None = None
+    fair_up: float | None = None  # the fair value used for decisions (blend of model and market)
+    model_up: float | None = None  # the raw model probability, before blending
     up_price: float | None = None  # cost to buy UP now (best YES ask)
     down_price: float | None = None  # cost to buy DOWN now (1 - best YES bid)
     up_sell: float | None = None  # what selling UP pays now (best YES bid)
@@ -76,8 +87,29 @@ class Call:
 
 
 def fee(price: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
-    p = min(max(price, 0.0), 1.0)
+    return _fee(round(min(max(price, 0.0), 1.0), 4), role)
+
+
+@lru_cache(maxsize=4096)
+def _fee(p: float, role: LiquidityRole) -> float:
     return float(trade_fee(1, Decimal(f"{p:.4f}"), role))
+
+
+def _logit(p: float) -> float:
+    p = min(max(p, 1e-4), 1 - 1e-4)
+    return math.log(p / (1 - p))
+
+
+def blend_fair(model_p: float, market_p: float, weight: float) -> float:
+    """Market-anchored fair value: move from Kalshi's price toward the model by ``weight``
+    in log-odds space, clipped to [0.01, 0.99]."""
+    z = _logit(market_p) + weight * (_logit(model_p) - _logit(market_p))
+    return min(max(1 / (1 + math.exp(-z)), 0.01), 0.99)
+
+
+def exit_hysteresis(cfg: EngineConfig) -> float:
+    """How far below fair (positive) or above fair (negative) a bid must be to sell."""
+    return cfg.sell_hysteresis if cfg.exit_mode == "fair" else -cfg.take_profit
 
 
 def buy_limit(fair: float, min_edge: float) -> float | None:
@@ -161,10 +193,18 @@ def evaluate(
     if up_ask and up_bid:
         call.spread = round(up_ask.price - up_bid.price, 4)
 
-    p = fair_up(state, m, now_ms, cfg)
-    call.fair_up = p
+    p_model = fair_up(state, m, now_ms, cfg)
+    call.model_up = p_model
     if up_ask and up_bid:
         call.market_up = (up_ask.price + up_bid.price) / 2
+    p: float | None = p_model
+    if p_model is not None and cfg.model_weight < 1:
+        p = (
+            None
+            if call.market_up is None
+            else blend_fair(p_model, call.market_up, cfg.model_weight)
+        )
+    call.fair_up = p
     sig_now = state.sigma_per_s(now_ms)
     if cur and call.strike and sig_now and left > 0:
         horizon = max(left - WINDOW_S, 0) + min(left, WINDOW_S) / 3
@@ -176,8 +216,8 @@ def evaluate(
     if p is not None:
         call.buy_up_below = buy_limit(p, cfg.min_edge)
         call.buy_down_below = buy_limit(1 - p, cfg.min_edge)
-        call.sell_up_at = sell_trigger(p, cfg.sell_hysteresis)
-        call.sell_down_at = sell_trigger(1 - p, cfg.sell_hysteresis)
+        call.sell_up_at = sell_trigger(p, exit_hysteresis(cfg))
+        call.sell_down_at = sell_trigger(1 - p, exit_hysteresis(cfg))
         if up_ask:
             call.edge_up = p - up_ask.price - fee(up_ask.price)
         if down_ask:
@@ -220,17 +260,26 @@ def evaluate(
             )
             return call
         sell_now = bid.price - fee(bid.price)
-        if sell_now >= p_side - cfg.sell_hysteresis:
+        if sell_now >= p_side - exit_hysteresis(cfg):
             call.action = "SELL"
             call.reason = (
                 f"Selling {name} pays {bid.price:.2f} now ({sell_now:.3f} after fee), at or above "
                 f"its fair value {p_side:.3f}: take the money."
+                if cfg.exit_mode == "fair"
+                else f"Take profit: selling {name} pays {sell_now:.3f} after fee, "
+                f"{(sell_now - p_side) * 100:.1f}¢ above its fair value {p_side:.3f}."
             )
-        else:
+        elif cfg.exit_mode == "fair":
             call.action = "HOLD"
             call.reason = (
                 f"{name} is worth about {p_side:.3f} at settlement but only {sell_now:.3f} "
                 f"if sold now: hold."
+            )
+        else:
+            call.action = "HOLD"
+            call.reason = (
+                f"Holding {name} to the result (fair value {p_side:.3f}); "
+                f"sell only if the bid pays {cfg.take_profit * 100:.0f}¢ more than that."
             )
         return call
 
@@ -252,8 +301,17 @@ def evaluate(
         call.action = f"BUY {best_side}"
         price = call.up_price if best_side == "UP" else call.down_price
         fair = p if best_side == "UP" else 1 - p
+        if cfg.model_weight < 1 and call.model_up is not None and call.market_up is not None:
+            model_side = call.model_up if best_side == "UP" else 1 - call.model_up
+            mkt_side = call.market_up if best_side == "UP" else 1 - call.market_up
+            basis = (
+                f"Fair value {fair:.0%} for {best_side} "
+                f"(model {model_side:.0%}, Kalshi {mkt_side:.0%})"
+            )
+        else:
+            basis = f"Model gives {best_side} a {fair:.0%} chance"
         call.reason = (
-            f"Model gives {best_side} a {fair:.0%} chance; it costs {price:.2f}. "
+            f"{basis}; it costs {price:.2f}. "
             f"Expected profit {best_edge * 100:.1f}¢ per contract after fees."
         )
     else:

@@ -1,8 +1,9 @@
 """Paper account that trades the engine's calls against real order-book depth.
 
-Fills walk the live book level by level (taker), so a $500k account cannot
-pretend to buy more than is actually offered. Every fill pays Kalshi's taker
-fee. Positions settle at $1/$0 on Kalshi's published result. No orders are
+Taker fills walk the live book level by level, so a $500k account cannot
+pretend to buy more than is actually offered, and pay Kalshi's taker fee. Maker
+fills (resting orders, see ``engine.maker``) come in through ``add_fill`` and
+pay the maker fee. Positions settle at $1/$0 on Kalshi's published result. No orders are
 ever sent anywhere.
 """
 
@@ -105,13 +106,9 @@ class PaperAccount:
         reason: str,
     ) -> Fill | None:
         """Walk asks up to ``max_price`` within the per-trade and per-market budgets."""
-        if ticker in self.holdings:
-            return None  # one position per market, never add to it
-        if len(self.holdings) >= self.risk.max_open_markets:
-            return None
-        if now_ms - self.last_entry_ms.get(ticker, 0) < self.risk.cooldown_s * 1000:
-            return None
-        budget = min(equity * self.risk.max_risk_per_trade, self.risk.max_per_market, self.cash)
+        if not self.can_enter(ticker, now_ms):
+            return None  # one position per market (never add), position and cooldown limits
+        budget = self.budget(equity)
         spent = qty = fees = 0.0
         for lvl in asks:
             if lvl.price > max_price or budget - spent <= 0:
@@ -129,6 +126,45 @@ class PaperAccount:
         self.holdings[ticker] = Holding(side, qty, spent, now_ms)
         self.last_entry_ms[ticker] = now_ms
         f = Fill(now_ms, ticker, "BUY", side, qty, (spent - fees) / qty, fees, self.cash, reason)
+        self.fills.append(f)
+        return f
+
+    def budget(self, equity: float) -> float:
+        """Dollars one new entry may spend (per-trade, per-market and cash limits)."""
+        return min(equity * self.risk.max_risk_per_trade, self.risk.max_per_market, self.cash)
+
+    def can_enter(self, ticker: str, now_ms: int) -> bool:
+        return (
+            ticker not in self.holdings
+            and len(self.holdings) < self.risk.max_open_markets
+            and now_ms - self.last_entry_ms.get(ticker, 0) >= self.risk.cooldown_s * 1000
+        )
+
+    def add_fill(
+        self,
+        ticker: str,
+        side: str,
+        contracts: float,
+        price: float,
+        fee_each: float,
+        now_ms: int,
+        reason: str,
+    ) -> Fill | None:
+        """Book a (possibly partial) resting-order fill, adding to a same-side holding."""
+        h = self.holdings.get(ticker)
+        cost = contracts * (price + fee_each)
+        if contracts <= 0 or cost > self.cash or (h is not None and h.side != side):
+            return None
+        self.cash -= cost
+        if h is None:
+            self.holdings[ticker] = Holding(side, contracts, cost, now_ms)
+            self.last_entry_ms[ticker] = now_ms
+        else:
+            h.contracts += contracts
+            h.cost += cost
+        f = Fill(
+            now_ms, ticker, "BUY", side, contracts, price, contracts * fee_each, self.cash, reason
+        )
         self.fills.append(f)
         return f
 
