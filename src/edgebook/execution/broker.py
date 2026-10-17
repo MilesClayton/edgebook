@@ -55,9 +55,13 @@ class KalshiBroker:
         subaccount: int,
         client: httpx.AsyncClient | None = None,
         clock: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+        exchange_index: int = 2,
     ) -> None:
         self.base = URLS[environment]
         self.signer, self.subaccount, self.clock = signer, subaccount, clock
+        # Kalshi runs several matching engines ("shards"); crypto markets (all BTC) are on 2.
+        # Every order, position, fill and the balance are scoped to this one shard.
+        self.exchange_index = exchange_index
         self.client = client or httpx.AsyncClient(timeout=5.0, follow_redirects=False)
         self.read_bucket = TokenBucket(200)
         self.write_bucket = TokenBucket(50)
@@ -104,8 +108,11 @@ class KalshiBroker:
         status = await self.get("/exchange/status")
         if status["trading_active"] is not True or status["exchange_active"] is not True:
             raise GuardError("exchange is paused")
-        params: dict[str, str | int] = {"subaccount": self.subaccount}
-        balance = await self.get("/portfolio/balance", params)
+        params: dict[str, str | int] = {
+            "subaccount": self.subaccount,
+            "exchange_index": self.exchange_index,
+        }
+        balance = await self.get("/portfolio/balance", params)  # cash on this shard only
         rows = await self.pages("/portfolio/positions", "market_positions", params)
         resting = await self.pages("/portfolio/orders", "orders", {**params, "status": "resting"})
         if resting:
@@ -116,8 +123,10 @@ class KalshiBroker:
         positions: dict[str, int] = {}
         for row in rows:
             ticker = row["ticker"]
-            if ticker in positions or row.get("exchange_index", 0) != 0:
-                raise GuardError("unsupported duplicate/sharded position")
+            if ticker in positions or row.get("exchange_index", self.exchange_index) != (
+                self.exchange_index
+            ):
+                raise GuardError("duplicate position or position on another exchange shard")
             positions[ticker] = fixed(row["position_fp"], 100)
         return {
             "as_of_ms": min(as_of, started),
@@ -127,8 +136,14 @@ class KalshiBroker:
 
     async def market(self, ticker: str) -> dict[str, Any]:
         market = (await self.get(f"/markets/{ticker}"))["market"]
-        if market["ticker"] != ticker or market.get("exchange_index", 0) != 0:
-            raise GuardError("mismatched or unsupported sharded market")
+        if market["ticker"] != ticker:
+            raise GuardError("market identity mismatch")
+        shard = market.get("exchange_index", 0)
+        if shard != self.exchange_index:
+            raise GuardError(
+                f"market is on exchange shard {shard}; execution is configured for shard "
+                f"{self.exchange_index}"
+            )
         return dict(market)
 
     async def quote(self, ticker: str, series: str) -> dict[str, Any]:
@@ -195,7 +210,7 @@ class KalshiBroker:
             "reduce_only": intent.action == "sell",
             "cancel_order_on_pause": True,
             "subaccount": self.subaccount,
-            "exchange_index": 0,
+            "exchange_index": self.exchange_index,
         }
         await self.write_bucket.acquire()
         if deadline_ms is not None and self.clock() >= deadline_ms:
@@ -216,7 +231,11 @@ class KalshiBroker:
     async def find_order(self, client_id: str, order_id: str | None) -> dict[str, Any] | None:
         if order_id:
             return dict((await self.get(f"/portfolio/orders/{order_id}"))["order"])
-        rows = await self.pages("/portfolio/orders", "orders", {"subaccount": self.subaccount})
+        rows = await self.pages(
+            "/portfolio/orders",
+            "orders",
+            {"subaccount": self.subaccount, "exchange_index": self.exchange_index},
+        )
         matches = [row for row in rows if row.get("client_order_id") == client_id]
         if len(matches) > 1:
             raise GuardError("duplicate client order ids at broker")
@@ -229,13 +248,17 @@ class KalshiBroker:
             or fixed(order["initial_count_fp"], 100) != intent.units
             or fixed(order["yes_price_dollars"], DOLLAR) != intent.yes_price
             or order["subaccount_number"] != self.subaccount
-            or order.get("exchange_index", 0) != 0
+            or order.get("exchange_index", self.exchange_index) != self.exchange_index
         ):
             raise GuardError("broker order differs from confirmed intent")
         rows = await self.pages(
             "/portfolio/fills",
             "fills",
-            {"order_id": order["order_id"], "subaccount": self.subaccount},
+            {
+                "order_id": order["order_id"],
+                "subaccount": self.subaccount,
+                "exchange_index": self.exchange_index,
+            },
         )
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -244,7 +267,7 @@ class KalshiBroker:
                 or row["ticker"] != intent.ticker
                 or row["book_side"] != intent.book_side
                 or row["subaccount_number"] != self.subaccount
-                or row.get("exchange_index", 0) != 0
+                or row.get("exchange_index", self.exchange_index) != self.exchange_index
             ):
                 raise GuardError("broker fill identity mismatch")
             units = fixed(row["count_fp"], 100)

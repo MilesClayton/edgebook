@@ -86,6 +86,9 @@ class LiveSettings(BaseSettings):
     kalshi_private_key: SecretStr | None = None
     kalshi_private_key_path: Path | None = None
     subaccount: int = Field(default=0, ge=0, le=63)
+    # Kalshi exchange shard the execution account trades on; 2 = Crypto and Commodities,
+    # where every BTC market lives. Fund this shard (or enable auto-rebalancing) at Kalshi.
+    exchange_index: int = Field(default=2, ge=0, le=63)
     purchase_spend_cents: int = Field(default=500, gt=0, le=100_000_000)
     open_exposure_cents: int = Field(default=300, gt=0, le=100_000_000)
     realized_loss_cents: int = Field(default=300, gt=0, le=100_000_000)
