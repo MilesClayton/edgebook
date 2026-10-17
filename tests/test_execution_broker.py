@@ -56,14 +56,14 @@ def fixture_routes() -> dict[str, dict[str, Any]]:
         "/exchange/status": {"trading_active": True, "exchange_active": True},
         "/portfolio/balance": {"balance": 1000},
         "/portfolio/positions": {
-            "market_positions": [{"ticker": TICKER, "position_fp": "0.37", "exchange_index": 0}],
+            "market_positions": [{"ticker": TICKER, "position_fp": "0.37", "exchange_index": 2}],
         },
         "/portfolio/orders": {"orders": []},
         f"/markets/{TICKER}": {
             "market": {
                 "ticker": TICKER,
                 "event_ticker": "KXBTC15M-EVENT",
-                "exchange_index": 0,
+                "exchange_index": 2,
             }
         },
         "/events/KXBTC15M-EVENT": {
@@ -137,6 +137,12 @@ async def test_signed_account_quote_and_paginated_orders(signer: KalshiSigner) -
         for request in seen
         if "/portfolio/" in request.url.path
     )
+    # BTC markets live on Kalshi's crypto shard; every account read is scoped to it
+    assert all(
+        request.url.params.get("exchange_index") == "2"
+        for request in seen
+        if request.url.path.endswith(("/balance", "/positions", "/orders"))
+    )
     assert await broker.find_order("absent", None) is None
     routes["/portfolio/orders"]["orders"] = [wire_order()]
     assert (await broker.find_order("fixture-client", None)) is not None
@@ -178,6 +184,7 @@ async def test_order_direction_ioc_and_exact_price(
     assert body["count"] == "1.00"
     assert body["time_in_force"] == "immediate_or_cancel"
     assert body["subaccount"] == 2
+    assert body["exchange_index"] == 2
     assert body["self_trade_prevention_type"] == "taker_at_cross"
     await broker.close()
 
@@ -373,4 +380,16 @@ async def test_expired_dispatch_deadline_never_calls_broker(signer: KalshiSigner
         await broker.submit(intent(), "fixture", deadline_ms=NOW)
     assert caught.value.dispatched is False
     assert calls == []
+    await broker.close()
+
+
+async def test_markets_on_another_shard_are_refused(signer: KalshiSigner) -> None:
+    routes = fixture_routes()
+    routes[f"/markets/{TICKER}"]["market"]["exchange_index"] = 0
+    broker = broker_for(signer, route_reply(routes))
+    with pytest.raises(GuardError, match="shard 0; execution is configured for shard 2"):
+        await broker.market(TICKER)
+    routes[f"/markets/{TICKER}"]["market"]["ticker"] = "OTHER"
+    with pytest.raises(GuardError, match="identity mismatch"):
+        await broker.market(TICKER)
     await broker.close()

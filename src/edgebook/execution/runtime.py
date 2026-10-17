@@ -62,7 +62,10 @@ def build_service(
         ledger = SQLiteLedger(directory / "ledger.sqlite3", settings.limits(), binding)
         ledger.recover(engine.clock())
         broker = KalshiBroker(
-            KalshiSigner.from_pem(key_id, pem), settings.environment, settings.subaccount
+            KalshiSigner.from_pem(key_id, pem),
+            settings.environment,
+            settings.subaccount,
+            exchange_index=settings.exchange_index,
         )
 
         def source(ticker: str, holding: dict[str, Any] | None) -> dict[str, Any]:
