@@ -3,7 +3,7 @@
 // Reads only the page URL to know which market you are looking at, then shows Edgebook's
 // live call for it and lets you ask Jev for a bounded decision. It never reads or touches
 // Kalshi's own page elements and cannot place orders: a Jev proposal is handed to the
-// toolbar popup, where the exact terms must still be confirmed.
+// toolbar popup, where it is only sent if you click Buy.
 "use strict";
 (() => {
   const K = globalThis.EdgebookKalshi;
@@ -80,7 +80,7 @@
       const reply = await chrome.runtime.sendMessage({ type: "edgebook:ask-jev", ticker, quantity });
       if (!reply || !reply.ok) throw new Error((reply && reply.error) || "No reply from Edgebook.");
       results.set(ticker, reply.proposal
-        ? `Proposal ready: ${reply.summary}\nOpen the Edgebook toolbar popup to review and confirm the exact terms before ${new Date(reply.proposal.expires_ms).toLocaleTimeString()}. Nothing has been sent.`
+        ? `Proposal ready: ${reply.summary}\nOpen the Edgebook toolbar popup and click Buy before ${new Date(reply.proposal.expires_ms).toLocaleTimeString()} to send it. Nothing has been sent.`
         : `Jev chose ${String(reply.status).toUpperCase()}. No order.`);
     } catch (error) {
       results.set(ticker, error.message);
@@ -95,7 +95,7 @@
     body.replaceChildren();
     if (!ref) return;
     if (!live) {
-      body.append(line("Connect in the Edgebook toolbar popup and tick “Show Edgebook on Kalshi pages”.", "muted"));
+      body.append(line("Open the Edgebook toolbar popup once and connect.", "muted"));
       return;
     }
     const calls = K.callsFor(live, ref);
@@ -133,7 +133,7 @@
       const long = o.side === "yes" ? "DOWN" : "UP";
       body.append(line(`Long-shot seller (paper): bidding ${o.side === "yes" ? "UP" : "DOWN"} at ${K.price(o.price)} for ${Math.round(o.contracts).toLocaleString("en-US")} contracts, i.e. selling the ${long} long shot at ${K.price(1 - o.price)}.`, "row muted"));
     }
-    body.append(line("Paper-trading model output, not advice. Orders only from the popup after you confirm exact terms.", "muted"));
+    body.append(line("Paper-trading model output, not advice. Orders only from the popup when you click Buy.", "muted"));
   }
 
   async function refresh() {

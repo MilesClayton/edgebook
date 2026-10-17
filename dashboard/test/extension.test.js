@@ -44,7 +44,7 @@ test("extension reads Kalshi pages only and has no broker/gateway credential sur
   assert.match(source, /idempotency_key: idempotencyKey/);
 });
 
-test("popup requires resume and exact confirmation, then renders actual partial fill", async () => {
+function popupHarness(storage, fetch) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -56,15 +56,24 @@ test("popup requires resume and exact confirmation, then renders actual partial 
   element("base").value = "https://fixture-dashboard.test";
   element("quantity").value = "1.00";
   element("ticker").value = "KXBTC15M-FIXTURE";
-  element("passcode").value = "fixture-password";
-  const storage = { local: {}, session: {} };
   const area = (name) => ({
-    get: async (key) => ({ [key]: storage[name][key] }),
+    get: async (keys) => Object.fromEntries([keys].flat().map((k) => [k, storage[name][k]])),
     set: async (data) => Object.assign(storage[name], data),
     remove: async (key) => { delete storage[name][key]; },
   });
   const chrome = { permissions: { request: async () => true },
     storage: { local: area("local"), session: area("session") } };
+  return { element, open: async () => {
+    const source = await readFile(new URL("../../extension/popup.js", import.meta.url), "utf8");
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    await new AsyncFunction("document", "chrome", "fetch", "setInterval", "formatOrder",
+      "proposalText", "validBase", "exactQuantity", source.slice(source.indexOf("\n") + 1))(
+      { getElementById: element }, chrome, fetch, () => {}, formatOrder, proposalText, validBase, exactQuantity,
+    );
+  } };
+}
+
+test("popup remembers the password, auto-connects, resumes and buys in one click each", async () => {
   let paused = true;
   const sent = [];
   const proposal = {
@@ -78,10 +87,10 @@ test("popup requires resume and exact confirmation, then renders actual partial 
   };
   const fetch = async (url, options) => {
     const body = options.body && JSON.parse(options.body);
-    sent.push({ url, body });
+    sent.push({ url, body, auth: options.headers.Authorization });
     let result;
     if (url.endsWith("action=status")) result = {
-      configured: true, enabled: true, paused, environment: "demo",
+      configured: true, enabled: true, paused, environment: "production",
       account_updated_ms: Date.now(), remaining_purchase_budget: "5.0", open_exposure: "0",
       realized_loss: "0", positions: [], orders: [],
       limits: { purchase_spend_cents: 500, open_exposure_cents: 300, realized_loss_cents: 300, order_debit_cents: 100 },
@@ -95,35 +104,43 @@ test("popup requires resume and exact confirmation, then renders actual partial 
     else throw new Error("Unexpected fixture request");
     return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
   };
-  const source = await readFile(new URL("../../extension/popup.js", import.meta.url), "utf8");
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  await new AsyncFunction("document", "chrome", "fetch", "setInterval", "formatOrder",
-    "proposalText", "validBase", "exactQuantity", source.slice(source.indexOf("\n") + 1))(
-    { getElementById: element }, chrome, fetch, () => {}, formatOrder, proposalText, validBase, exactQuantity,
-  );
-  assert.equal(element("review").disabled, true);
-  assert.equal(element("confirm").disabled, true);
-  await element("connect").listeners.click();
-  assert.equal(element("review").disabled, true);
-  assert.equal(element("resume").disabled, true);
-  element("resume-check").checked = true;
-  element("resume-check").listeners.change();
-  await element("resume").listeners.click();
-  assert.equal(element("review").disabled, false);
-  await element("review").listeners.click();
-  assert.equal(sent.filter((item) => item.url.endsWith("action=confirm")).length, 0);
-  assert.equal(element("confirm").disabled, true);
-  element("confirm-check").checked = true;
-  element("confirm-check").listeners.change();
-  assert.equal(element("confirm").disabled, false);
-  await element("confirm").listeners.click();
+  const storage = { local: {}, session: {} };
+
+  // first open: one-time setup
+  const first = popupHarness(storage, fetch);
+  await first.open();
+  assert.equal(sent.length, 0);  // nothing saved yet, so no auto-connect
+  assert.equal(first.element("setup").hidden, false);
+  first.element("passcode").value = "fixture-password";
+  await first.element("connect").listeners.click();
+  assert.deepEqual(storage.local, { base: "https://fixture-dashboard.test", passcode: "fixture-password" });
+  assert.equal(first.element("passcode").value, "");
+  assert.equal(first.element("setup").hidden, true);
+
+  // next open: connects by itself with the saved password
+  sent.length = 0;
+  const popup = popupHarness(storage, fetch);
+  await popup.open();
+  assert.ok(sent[0].url.endsWith("action=status"));
+  assert.equal(sent[0].auth, `Basic ${btoa("edgebook:fixture-password")}`);
+  assert.equal(popup.element("review").disabled, true);  // paused
+  assert.equal(popup.element("resume").disabled, false);
+  await popup.element("resume").listeners.click();  // one click, no checkbox
+  assert.equal(popup.element("review").disabled, false);
+  await popup.element("review").listeners.click();
+  assert.equal(sent.filter((item) => item.url.endsWith("action=confirm")).length, 0);  // proposal only
+  assert.equal(popup.element("confirm").disabled, false);
+  assert.match(popup.element("confirm").textContent, /^Buy 1.00 YES at \$0.4000/);
+  await popup.element("confirm").listeners.click();  // one Buy click sends it
   const confirmation = sent.find((item) => item.url.endsWith("action=confirm")).body;
   assert.deepEqual(confirmation.intent, proposal.intent);
   assert.equal(confirmation.confirmed, true);
   assert.equal(confirmation.confirmation_token, proposal.confirmation_token);
   assert.ok(confirmation.idempotency_key);
-  assert.match(element("orders").textContent, /Filled 0.37/);
-  assert.equal(element("confirm").disabled, true);
+  assert.match(popup.element("orders").textContent, /Filled 0.37/);
+  assert.equal(popup.element("confirm").disabled, true);
   assert.equal(storage.session.pending, undefined);
-  assert.deepEqual(Object.keys(storage.local), ["base"]);
+
+  await popup.element("forget").listeners.click();
+  assert.deepEqual(storage.local, { base: "https://fixture-dashboard.test" });
 });

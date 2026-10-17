@@ -53,7 +53,7 @@ test("selects the page's calls and long-shot orders", () => {
 
 function chromeStub(session = {}, local = {}) {
   const area = (store) => ({
-    get: async (key) => ({ [key]: store[key] }),
+    get: async (keys) => Object.fromEntries([keys].flat().map((k) => [k, store[k]])),
     set: async (data) => Object.assign(store, data),
     remove: async (key) => { delete store[key]; },
   });
@@ -69,7 +69,7 @@ function chromeStub(session = {}, local = {}) {
   };
 }
 
-test("background worker needs opt-in, fetches live data and stores Jev proposals for the popup", async () => {
+test("background worker uses the saved password, fetches live data and stores Jev proposals", async () => {
   const chrome = chromeStub({}, { base: "https://dash.test" });
   const sent = [];
   globalThis.chrome = chrome;
@@ -85,8 +85,8 @@ test("background worker needs opt-in, fetches live data and stores Jev proposals
   await import("../../extension/background.js");
   const off = await chrome.dispatch({ type: "edgebook:live" });
   assert.equal(off.ok, false);
-  assert.match(off.error, /Show Edgebook on Kalshi pages/);
-  chrome.session.onpage = { base: "https://dash.test", passcode: "secret" };
+  assert.match(off.error, /Open the Edgebook toolbar popup once/);
+  chrome.local.passcode = "secret";  // saved by the popup on first connect
   const live = await chrome.dispatch({ type: "edgebook:live" });
   assert.equal(live.ok, true);
   assert.equal(live.live.calls.length, 3);
@@ -102,8 +102,6 @@ test("background worker needs opt-in, fetches live data and stores Jev proposals
   assert.ok(chrome.session.pending.idempotencyKey);
   assert.ok(!sent.some((s) => s.url.includes("execution")));  // never confirms or submits
   assert.equal(await chrome.dispatch({ type: "edgebook:live" }, { id: "other" }), "ignored");
-  chrome.local.base = "https://other.test";
-  assert.match((await chrome.dispatch({ type: "edgebook:live" })).error, /connect again/);
 });
 
 class Node {
@@ -143,5 +141,5 @@ test("page panel renders the page's calls and hands Ask Jev to the background wo
   const button = host.find((n) => n.tag === "button" && n.textContent === "Ask Jev");
   await button.listeners.click();
   assert.deepEqual(messages.at(-1), { type: "edgebook:ask-jev", ticker: "KXBTCD-26OCT1717-T82099.99", quantity: "1" });
-  assert.match(host.text(), /Open the Edgebook toolbar popup to review and confirm/);
+  assert.match(host.text(), /Open the Edgebook toolbar popup and click Buy/);
 });
