@@ -7,37 +7,37 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header><strong>EDGEBOOK</strong><span id="mode">Setup required</span></header>
-  <p class="muted">Jev decisions · guarded Kalshi orders</p>
-  <label>Dashboard address<input id="base" type="url" value="https://dashboard-ten-murex-53tctwc6fk.vercel.app" autocomplete="off"></label>
-  <label>Dashboard passcode<input id="passcode" type="password" autocomplete="off" placeholder="Kept only while this popup is open"></label>
-  <label class="check"><input id="onpage" type="checkbox">Show Edgebook on Kalshi pages (keeps the passcode in Chrome's session memory until Chrome closes).</label>
-  <button id="connect">Connect / refresh</button>
+  <header><strong>EDGEBOOK</strong><span id="mode">Connecting…</span></header>
+  <p class="muted">Jev decisions · Kalshi orders</p>
+  <section id="setup">
+    <p class="muted">One-time setup: remembered on this machine.</p>
+    <label>Dashboard address<input id="base" type="url" value="https://dashboard-ten-murex-53tctwc6fk.vercel.app" autocomplete="off"></label>
+    <label>Dashboard password<input id="passcode" type="password" autocomplete="off"></label>
+    <button id="connect">Connect</button>
+  </section>
   <section id="account" hidden>
     <p id="state"></p>
     <div class="metrics"><div>Purchase budget left<strong id="budget">—</strong></div><div>Open exposure<strong id="exposure">—</strong></div><div>Realized loss<strong id="loss">—</strong></div></div>
     <p class="muted" id="caps"></p>
     <p id="scope" class="muted"></p>
     <h2>Positions</h2><div id="positions">No routed positions.</div>
-    <div class="row"><button id="pause" class="secondary">Pause</button><button id="reconcile" class="secondary">Reconcile</button></div>
-    <label class="check"><input id="resume-check" type="checkbox">Enable user-confirmed submissions for this session.</label>
-    <button id="resume" class="secondary">Resume confirmed trading</button>
+    <div class="row"><button id="resume">Resume trading</button><button id="pause" class="secondary">Pause</button><button id="reconcile" class="secondary">Reconcile</button></div>
   </section>
   <section>
-    <h2>Decision review</h2>
-    <label>Exact market ticker<input id="ticker" autocomplete="off" placeholder="KXBTC15M-…"></label>
+    <h2>Ask Jev</h2>
+    <label>Market ticker<input id="ticker" autocomplete="off" placeholder="KXBTC15M-… (or use the panel on a Kalshi page)"></label>
     <label>Contracts<input id="quantity" type="number" min="0.01" step="0.01" value="1.00"></label>
-    <button id="review" disabled>Ask Jev for a bounded decision</button>
-    <p class="muted">Estimated edge uses the engine forecast, executable quote, reserved fees and latency buffer. It is not a proven trading advantage.</p>
+    <button id="review" disabled>Ask Jev</button>
+    <p class="muted">Estimated edge uses the engine forecast, live quote, fees and a latency buffer. It is not a proven trading advantage.</p>
   </section>
   <section id="proposal" hidden>
-    <h2>Unsubmitted proposal</h2>
+    <h2>Proposal</h2>
     <pre id="proposal-details"></pre>
-    <label class="check"><input id="confirm-check" type="checkbox">I confirm this exact market, side, quantity and limit price.</label>
-    <button id="confirm" disabled>Confirm and submit IOC order</button>
+    <button id="confirm" disabled>Buy</button>
   </section>
-  <p id="message" role="status" aria-live="polite">Connect to view actual backend state. Unattended trading is disabled.</p>
-  <details><summary>Recent routed orders</summary><pre id="orders">No status loaded.</pre></details>
+  <p id="message" role="status" aria-live="polite">Connecting…</p>
+  <details><summary>Recent orders</summary><pre id="orders">No status loaded.</pre></details>
+  <button id="forget" class="secondary" hidden>Forget saved password</button>
   <script src="popup.js" type="module"></script>
 </body>
 </html>

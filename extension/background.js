@@ -1,21 +1,16 @@
 // Service worker: the only part that talks to the dashboard on behalf of Kalshi pages.
 //
-// Uses the dashboard origin saved by the popup and a passcode kept in Chrome *session*
-// storage (memory only, cleared when Chrome closes), and only if you opted in from the
-// popup. A Jev proposal is stored as the popup's pending proposal; confirming it still
-// requires the popup's exact-terms checkbox.
+// Uses the dashboard address and password saved by the popup on this machine. A Jev
+// proposal is stored as the popup's pending proposal; sending it still takes the popup's
+// Buy click.
 import { exactQuantity, proposalText, validBase } from "./view.js";
 
 const TICKER = /^(KXBTC15M|KXBTCD)-[A-Z0-9]+-[A-Z0-9.]+$/;
 
 async function access() {
-  const { base } = await chrome.storage.local.get("base");
-  const { onpage } = await chrome.storage.session.get("onpage");
-  if (!base || !onpage || !onpage.passcode) {
-    throw new Error("Open the Edgebook popup, connect, and tick “Show Edgebook on Kalshi pages”.");
-  }
-  if (validBase(base) !== onpage.base) throw new Error("Dashboard changed; connect again in the popup.");
-  return { base: validBase(base), passcode: onpage.passcode };
+  const { base, passcode } = await chrome.storage.local.get(["base", "passcode"]);
+  if (!base || !passcode) throw new Error("Open the Edgebook toolbar popup once and connect.");
+  return { base: validBase(base), passcode };
 }
 
 async function request(path, body) {
