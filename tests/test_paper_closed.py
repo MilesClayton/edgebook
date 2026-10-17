@@ -10,6 +10,15 @@ from edgebook.engine.paper import PaperAccount
 NOW = 1_792_130_700_000
 
 
+def test_fill_fee_handles_tiny_fractional_fills() -> None:
+    from edgebook.core.types import LiquidityRole
+    from edgebook.engine.decide import fill_fee
+
+    assert fill_fee(0.96, 0.004, LiquidityRole.MAKER) == pytest.approx(0.01)  # rounds up, no crash
+    assert fill_fee(0.5, 0, LiquidityRole.TAKER) == 0.0
+    assert fill_fee(0.5, 100, LiquidityRole.TAKER) == pytest.approx(1.75)
+
+
 def test_closed_trades_kept_in_full_and_rebuilt_for_old_files(tmp_path: Path) -> None:
     acct = PaperAccount()
     acct.add_fill("A", "yes", 10, 0.5, 0.01, NOW, "x")
