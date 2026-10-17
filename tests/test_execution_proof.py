@@ -71,6 +71,7 @@ async def test_unproven_strategy_blocks_entries_but_not_exits(harness: Harness) 
     status = await harness.service.status()
     assert status["paper_proof"] == {
         "strategy": "anchored",
+        "required": True,
         "proven": False,
         "reason": "12 closed paper trades; 200 required",
     }
@@ -87,3 +88,19 @@ async def test_unproven_strategy_blocks_entries_but_not_exits(harness: Harness) 
     with harness.ledger.connection() as db:
         kinds = [row[0] for row in db.execute("SELECT kind FROM audit")]
     assert kinds.count("entry_blocked_unproven") == 2
+
+
+async def test_owner_can_waive_the_gate_and_waived_entries_are_audited(harness: Harness) -> None:
+    harness.service.settings = harness.settings.model_copy(update={"require_paper_proof": False})
+    harness.proven = {"proven": False, "reason": "12 closed paper trades; 200 required"}
+    await harness.service.control("resume")
+    bought = await harness.service.confirm(
+        harness.confirm(await harness.proposal(), "waive-key-00000001")
+    )
+    assert bought["status"] == "executed"  # unproven, but the owner waived the gate
+    status = await harness.service.status()
+    assert status["paper_proof"]["required"] is False
+    with harness.ledger.connection() as db:
+        kinds = [row[0] for row in db.execute("SELECT kind FROM audit")]
+    assert kinds.count("paper_proof_waived") == 2  # at review and at confirmation
+    assert "entry_blocked_unproven" not in kinds
