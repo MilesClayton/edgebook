@@ -321,9 +321,21 @@ for (const id of ["ticker", "quantity", "base"]) element(id).addEventListener("i
 setInterval(controls, 500);
 setInterval(() => { fillTicker().catch(() => {}); }, 30000);
 // keep the "Right now" card current while the popup is open
-setInterval(() => {
-  if (saved.passcode && !busy) request("/api/execution?action=status").then((d) => render(d, true)).catch(() => {});
-}, 5000);
+// (a failed refresh says so instead of silently leaving old checks on screen)
+let refreshing = false;
+async function refresh() {
+  if (!saved.passcode || busy || refreshing) return;
+  refreshing = true;
+  try {
+    render(await request("/api/execution?action=status"), true);
+  } catch (error) {
+    element("now-updated").textContent = "NOT UPDATING";
+    element("message").textContent = `Couldn't refresh from the server: ${error.message} (retrying every 5 s)`;
+  } finally {
+    refreshing = false;
+  }
+}
+setInterval(refresh, 5000);
 
 const stored = await chrome.storage.local.get(["base", "passcode"]);
 saved = { base: stored.base || element("base").value, passcode: stored.passcode || "" };
