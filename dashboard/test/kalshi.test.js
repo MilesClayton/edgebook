@@ -90,6 +90,7 @@ test("background worker uses the saved password, fetches live data and stores Je
   globalThis.fetch = async (url, options) => {
     sent.push({ url, options });
     const body = url.endsWith("kind=live") ? { data: LIVE }
+      : url.endsWith("action=status") ? { configured: true, enabled: true, paused: false, autopilot: true, confirmation_token: "must-not-leak", api_token: "must-not-leak" }
       : { status: "confirmation_required", proposal_id: "p", confirmation_token: "t", expires_ms: Date.now() + 15000,
         intent: { ticker: "KXBTCD-26OCT1717-T82099.99", action: "buy", side: "no", quantity: "2.00", limit_price: "0.6500" },
         maximum_debit: "1.3", fee_reserve: "0.05", estimated_settlement_probability: 0.7,
@@ -114,7 +115,10 @@ test("background worker uses the saved password, fetches live data and stores Je
   assert.deepEqual(JSON.parse(sent.at(-1).options.body), { ticker: "KXBTCD-26OCT1717-T82099.99", quantity: "2.00" });
   assert.equal(chrome.session.pending.base, "https://dash.test");  // the popup picks it up
   assert.ok(chrome.session.pending.idempotencyKey);
-  assert.ok(!sent.some((s) => s.url.includes("execution")));  // never confirms or submits
+  assert.ok(!sent.some((s) => s.url.includes("execution") && s.options.method !== "GET"));
+  assert.equal(live.execution.autopilot, true);
+  assert.equal(live.execution.confirmation_token, undefined);
+  assert.equal(live.execution.api_token, undefined);
   assert.equal(await chrome.dispatch({ type: "edgebook:live" }, { id: "other" }), "ignored");
 });
 
@@ -135,7 +139,7 @@ test("page panel renders the page's calls and hands Ask Jev to the background wo
   const document = { documentElement: html, createElement: (tag) => new Node(tag), getElementById: () => null };
   const chrome = { runtime: { sendMessage: async (m) => {
     messages.push(m);
-    return m.type === "edgebook:live" ? { ok: true, live: LIVE }
+    return m.type === "edgebook:live" ? { ok: true, live: LIVE, checked_ms: Date.now(), execution: { configured: true, enabled: true, paused: false, autopilot: true, positions: [], remaining_purchase_budget: "20.00", open_exposure: "0", realized_pnl: "0" } }
       : { ok: true, proposal: { expires_ms: Date.now() + 15000 }, summary: "BUY NO · KXBTCD-26OCT1717-T82099.99" };
   } } };
   const source = await readFile(new URL("../../extension/kalshi.js", import.meta.url), "utf8");
@@ -149,11 +153,25 @@ test("page panel renders the page's calls and hands Ask Jev to the background wo
   const text = host.text();
   assert.match(text, /Above \$82,100/);
   assert.match(text, /BUY DOWN/);
+  assert.match(text, /AUTOMATIC/);
+  assert.match(text, /Budget room/);
+  assert.doesNotMatch(text, /Orders only from the popup/);
   assert.match(text, /Model 20% · Kalshi 35% · Fair 30%/);
-  assert.match(text, /selling the UP long shot at 4¢/);
+  assert.match(text, /Paper long-shot bid/);
   assert.doesNotMatch(text, /15-min/);  // another event's market is not shown
   const button = host.find((n) => n.tag === "button" && n.textContent === "Ask Jev");
   await button.listeners.click();
   assert.deepEqual(messages.at(-1), { type: "edgebook:ask-jev", ticker: "KXBTCD-26OCT1717-T82099.99", quantity: "1" });
-  assert.match(host.text(), /Open the Edgebook toolbar popup and click Buy/);
+  assert.match(host.text(), /Open Controls and confirm Buy/);
+});
+
+test("persistent monitor distinguishes automatic trading, pause and stale status", () => {
+  const now = Date.now();
+  const running = { configured: true, enabled: true, paused: false, autopilot: true };
+  assert.equal(K.executionState(running, now, now).label, "AUTOMATIC");
+  assert.equal(K.executionState({ ...running, paused: true }, now, now).label, "STOPPED");
+  assert.equal(K.executionState(running, now - 16000, now).label, "CHECKING");
+  assert.equal(K.executionState({ ...running, unknown_or_pending: true }, now, now).label, "CHECK ORDER");
+  assert.equal(K.executionState(null, now, now).label, "CHECKING");
+  assert.equal(K.executionState({ configured: false, reason: "Owner unavailable" }, now, now).detail, "Owner unavailable");
 });

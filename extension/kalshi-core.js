@@ -78,5 +78,22 @@
     };
   }
 
-  globalThis.EdgebookKalshi = { locate, callsFor, longshotsFor, describe, pct, price, cents };
+  function executionState(execution, checkedMs, now = Date.now()) {
+    if (!execution || !Number.isFinite(checkedMs) || now - checkedMs > 15000) {
+      return { label: "CHECKING", title: "Trading status unavailable", detail: "Reconnect in Controls to verify whether trading is running.", tone: "warn" };
+    }
+    if (!execution.configured || !execution.enabled) return {
+      label: "UNAVAILABLE", title: "Live trading unavailable",
+      detail: execution.reason || execution.error || "Open Controls to check the connection.", tone: "bad",
+    };
+    if (execution.unknown_or_pending) return { label: "CHECK ORDER", title: "An order needs reconciliation", detail: "New orders are blocked until its outcome is confirmed.", tone: "warn" };
+    if (execution.paused) return { label: "STOPPED", title: "Trading is paused", detail: execution.error || "Save a budget and press Start in Controls when ready.", tone: "warn" };
+    if (execution.autopilot || execution.longshot) return {
+      label: "AUTOMATIC", title: execution.autopilot && execution.longshot ? "Jev + long-shot are running" : execution.autopilot ? "Jev is watching your markets" : "Long-shot bids are running",
+      detail: "Real orders run automatically within your saved budget. Manage trading in Controls.", tone: "good",
+    };
+    return { label: "MANUAL", title: "Automatic trading is off", detail: "Manual proposals still need your Buy confirmation in Controls.", tone: "warn" };
+  }
+
+  globalThis.EdgebookKalshi = { locate, callsFor, longshotsFor, describe, executionState, pct, price, cents };
 })();
