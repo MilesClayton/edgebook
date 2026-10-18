@@ -62,6 +62,9 @@ def finite(value: Any, label: str) -> float:
 # open after their market resolved. ``result`` and ``settlement_value_dollars`` appear at
 # determination. A disputed result is deliberately excluded: it is still contested.
 RESOLVED_STATUSES = frozenset({"determined", "finalized", "amended"})
+# How long a just-placed resting order may be missing from Kalshi's reads before that counts
+# as a real reconciliation failure.
+ORDER_VISIBILITY_GRACE_MS = 15_000
 
 
 def resolved(market: dict[str, Any]) -> bool:
@@ -139,7 +142,22 @@ class ExecutionService:
     async def reconcile(self) -> None:
         for pending in self.ledger.orders(unresolved_only=True):
             try:
-                order = await self.broker.find_order(self.client_id(pending), pending["order_id"])
+                try:
+                    order = await self.broker.find_order(
+                        self.client_id(pending), pending["order_id"]
+                    )
+                except GuardError as error:
+                    # Kalshi can take a moment to show a just-created order (the ID read
+                    # 404s and the list omits it). A resting maker order keeps its whole
+                    # reservation, so skip it this pass instead of pausing all trading.
+                    if (
+                        str(error) == "acknowledged broker order not yet visible"
+                        and pending["resting"]
+                        and pending["status"] == "resting"
+                        and 0 <= self.clock() - pending["created_ms"] <= ORDER_VISIBILITY_GRACE_MS
+                    ):
+                        continue
+                    raise
                 if order is None:
                     raise GuardError(
                         "order absent from broker reads; absence cannot release reservation"
@@ -507,7 +525,7 @@ class ExecutionService:
             self.ledger.mark(key, "unknown", self.clock())
             self.ledger.pause(self.clock(), "submission outcome unknown; reconciliation required")
             raise
-        self.ledger.mark(key, "accepted", self.clock(), receipt["order_id"])
+        self.ledger.mark(key, "resting", self.clock(), receipt["order_id"])
         note["outcome"] = (
             f"resting {intent.side.upper()} bid {intent.limit_price} x {intent.quantity}"
         )

@@ -620,12 +620,18 @@ class SQLiteLedger:
         order_id: str | None = None,
         local_rejection: bool = False,
     ) -> None:
-        if status not in {"accepted", "rejected", "unknown"}:
+        if status not in {"accepted", "rejected", "unknown", "resting"}:
             raise GuardError("invalid order status")
         with self.transaction() as db:
             row = db.execute("SELECT * FROM orders WHERE key=?", (key,)).fetchone()
             if row is None or row["status"] not in {"pending", "accepted", "unknown", "resting"}:
                 raise GuardError("order not pending")
+            # An acknowledged post-only order rests (it cannot fill on entry); its full
+            # reservation stays held and reconciliation applies any later fills.
+            if status == "resting" and (
+                not json.loads(row["body"]).get("resting") or not (order_id or row["order_id"])
+            ):
+                raise GuardError("only an acknowledged maker order can be marked resting")
             if status == "rejected" and (row["order_id"] or row["filled"]):
                 raise GuardError("accepted order cannot be released as rejected")
             if local_rejection:
