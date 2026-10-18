@@ -388,11 +388,11 @@ async def test_start_cannot_override_failed_resting_cancel(pilot: Pilot) -> None
     await pilot.service.longshot_step()
 
     async def broken(order_id: str) -> None:
-        raise OSError('offline')
+        raise OSError("offline")
 
     pilot.broker.cancel = broken  # type: ignore[method-assign]
-    generation = pilot.harness.ledger.status()['generation']
-    with pytest.raises(GuardError, match='cancellation not confirmed'):
-        await pilot.service.start('longshot', generation)
-    assert pilot.harness.ledger.status()['paused'] is True
+    generation = pilot.harness.ledger.status()["generation"]
+    with pytest.raises(GuardError, match="cancellation not confirmed"):
+        await pilot.service.start("longshot", generation)
+    assert pilot.harness.ledger.status()["paused"] is True
     assert pilot.broker.submissions == 1
