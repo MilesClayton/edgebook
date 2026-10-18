@@ -1,4 +1,5 @@
-"""Kalshi V2 IOC adapter; GET failures are retryable, POSTs are never retried."""
+"""Kalshi V2 order adapter (IOC taker orders, plus post-only resting orders for the long-shot
+pilot); GET failures are retryable, POSTs are never retried."""
 
 from __future__ import annotations
 
@@ -114,9 +115,8 @@ class KalshiBroker:
         }
         balance = await self.get("/portfolio/balance", params)  # cash on this shard only
         rows = await self.pages("/portfolio/positions", "market_positions", params)
+        # resting orders are returned, not refused: the ledger accepts only the ones it placed
         resting = await self.pages("/portfolio/orders", "orders", {**params, "status": "resting"})
-        if resting:
-            raise GuardError("resting account orders require operator reconciliation")
         amount = balance["balance"]
         if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
             raise GuardError("invalid broker balance")
@@ -132,6 +132,7 @@ class KalshiBroker:
             "as_of_ms": min(as_of, started),
             "balance": amount * CENT,
             "positions": positions,
+            "resting_client_ids": [str(row.get("client_order_id") or "") for row in resting],
         }
 
     async def market(self, ticker: str) -> dict[str, Any]:
@@ -196,10 +197,16 @@ class KalshiBroker:
         return {"market": market, "bids": best, "observed_ms": started}
 
     async def submit(
-        self, intent: Intent, client_id: str, deadline_ms: int | None = None
+        self,
+        intent: Intent,
+        client_id: str,
+        deadline_ms: int | None = None,
+        resting_until_s: int | None = None,
     ) -> dict[str, Any]:
+        """IOC by default. With resting_until_s: a post-only good-till-canceled order that
+        Kalshi expires at that unix second even if this host is gone."""
         url = self.base + "/portfolio/events/orders"
-        body = {
+        body: dict[str, Any] = {
             "ticker": intent.ticker,
             "client_order_id": client_id,
             "side": intent.book_side,
@@ -212,6 +219,14 @@ class KalshiBroker:
             "subaccount": self.subaccount,
             "exchange_index": self.exchange_index,
         }
+        if resting_until_s is not None:
+            if intent.action != "buy":
+                raise BrokerRejectedError("only buys may rest", dispatched=False)
+            body.update(
+                time_in_force="good_till_canceled",
+                post_only=True,
+                expiration_ts=resting_until_s,
+            )
         await self.write_bucket.acquire()
         if deadline_ms is not None and self.clock() >= deadline_ms:
             raise BrokerRejectedError(
@@ -227,6 +242,19 @@ class KalshiBroker:
         if receipt.get("client_order_id", client_id) != client_id:
             raise GuardError("submission receipt client id mismatch")
         return receipt
+
+    async def cancel(self, order_id: str) -> None:
+        """Cancel one resting order. Already gone (404) is fine; reconciliation reads the
+        final status and fills either way."""
+        url = f"{self.base}/portfolio/orders/{order_id}"
+        await self.write_bucket.acquire()
+        response = await self.client.delete(
+            url,
+            params={"subaccount": self.subaccount, "exchange_index": self.exchange_index},
+            headers=self.signer.headers("DELETE", url),
+        )
+        if response.status_code != 404:
+            response.raise_for_status()
 
     async def find_order(self, client_id: str, order_id: str | None) -> dict[str, Any] | None:
         if order_id:

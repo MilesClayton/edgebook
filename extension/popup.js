@@ -40,6 +40,9 @@ function controls() {
   element("autopilot-on").disabled = busy || !status?.configured || !status?.enabled
     || !status?.autopilot_available || Boolean(status?.autopilot);
   element("autopilot-off").disabled = busy || !status?.autopilot;
+  element("longshot-on").disabled = busy || !status?.configured || !status?.enabled
+    || !status?.longshot_available || Boolean(status?.longshot);
+  element("longshot-off").disabled = busy || !status?.longshot;
   element("save-caps").disabled = busy || !status?.configured;
   element("setup").hidden = Boolean(saved.passcode);
   element("forget").hidden = !saved.passcode;
@@ -129,6 +132,25 @@ function renderAutopilot(data) {
   }
 }
 
+function renderLongshot(data) {
+  const on = Boolean(data.longshot);
+  const resting = data.resting_orders || 0;
+  element("longshot-state").textContent = !data.longshot_available
+    ? "Not available on this server."
+    : on && data.paused
+      ? "ON but paused: press Resume trading to let it place orders."
+      : on
+        ? `ON: copying the paper long-shot seller with small resting bids (${resting} resting now).`
+        : "Off: no resting orders.";
+  const proof = data.longshot_paper_proof || {};
+  element("longshot-proof").textContent = proof.reason
+    ? `Paper record: ${proof.reason}${data.paper_proof?.required === false ? " (proof waived by you)" : ""}`
+    : "";
+  element("longshot-log").textContent = (data.longshot_last || []).slice().reverse().map((note) =>
+    `${new Date(note.at_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}  ${note.ticker}  ${note.outcome}`,
+  ).join("\n") || "No orders yet.";
+}
+
 const usd = (value) => "$" + Number(value || 0).toFixed(2);
 
 function meter(id, used, capCents) {
@@ -160,6 +182,7 @@ function render(data, quiet = false) {
   }
   element("scope").textContent = data.scope || "";
   renderAutopilot(data);
+  renderLongshot(data);
   element("positions").textContent = (data.positions || []).map((position) =>
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
   ).join("\n") || "No routed positions.";
@@ -283,6 +306,16 @@ for (const [id, enabled] of [["autopilot-on", true], ["autopilot-off", false]]) 
     await request("/api/execution?action=autopilot", { confirmed: true, enabled });
     render(await request("/api/execution?action=status"));
     element("message").textContent = enabled ? "Autopilot is ON." : "Autopilot is OFF.";
+  }));
+}
+
+for (const [id, enabled] of [["longshot-on", true], ["longshot-off", false]]) {
+  element(id).addEventListener("click", () => run(async () => {
+    await request("/api/execution?action=longshot", { confirmed: true, enabled });
+    render(await request("/api/execution?action=status"));
+    element("message").textContent = enabled
+      ? "Long-shot seller is ON."
+      : "Long-shot seller is OFF; its resting orders were canceled.";
   }));
 }
 

@@ -34,6 +34,13 @@ TRADED_SERIES = ("KXBTC15M", "KXBTCD")
 HOURLY_STRIKES_SHOWN = 6
 DECISION_LOG_EVERY_MS = 10_000
 LONGSHOT_EVERY_MS = 5_000  # the long-shot seller re-quotes every 5 s (it evaluates many strikes)
+# the data checks a long-shot sale needs (the model-only gates do not apply to it)
+LONGSHOT_DATA_GATES = (
+    "market open",
+    "settlement index live (< 3 s old)",
+    "Kalshi stream live",
+    "both sides quoted",
+)
 FITTED_WEIGHT_FILE = "model_weight.json"
 
 
@@ -357,16 +364,7 @@ class LiveEngine:
     ) -> None:
         if r.maker is None:
             return
-        g = call.gates
-        data_ok = all(
-            g.get(k, False)
-            for k in (
-                "market open",
-                "settlement index live (< 3 s old)",
-                "Kalshi stream live",
-                "both sides quoted",
-            )
-        )
+        data_ok = all(call.gates.get(k, False) for k in LONGSHOT_DATA_GATES)
         cfg = r.spec.longshot
         order = quote_longshot(
             r.maker,

@@ -36,8 +36,13 @@ class Broker(Protocol):
     async def market(self, ticker: str) -> dict[str, Any]: ...
     async def quote(self, ticker: str, series: str) -> dict[str, Any]: ...
     async def submit(
-        self, intent: Intent, client_id: str, deadline_ms: int | None = None
+        self,
+        intent: Intent,
+        client_id: str,
+        deadline_ms: int | None = None,
+        resting_until_s: int | None = None,
     ) -> dict[str, Any]: ...
+    async def cancel(self, order_id: str) -> None: ...
     async def find_order(self, client_id: str, order_id: str | None) -> dict[str, Any] | None: ...
     async def order_fills(self, order: dict[str, Any], intent: Intent) -> list[dict[str, Any]]: ...
 
@@ -60,6 +65,8 @@ class ExecutionService:
         proof: Callable[[], dict[str, Any]],
         decide: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         tickers: Callable[[], list[str]] | None = None,
+        longshot_quotes: Callable[[], list[dict[str, Any]]] | None = None,
+        longshot_proof: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.settings, self.ledger, self.broker = settings, ledger, broker
         self.source, self.clock = source, clock
@@ -67,21 +74,27 @@ class ExecutionService:
         self.decide = decide  # Jev, for autopilot (None: autopilot unavailable)
         self.tickers = tickers  # markets autopilot may trade right now
         self.autopilot_last: list[dict[str, Any]] = []
+        # long-shot pilot: the paper strategy's current sales, and its paper record
+        self.longshot_quotes = longshot_quotes
+        self.longshot_proof = longshot_proof
+        self.longshot_last: list[dict[str, Any]] = []
         self.lock = asyncio.Lock()
 
-    def require_proof(self, route: str) -> None:
+    def require_proof(self, route: str, longshot: bool = False) -> None:
         """New entries need a paper-proven strategy; exits never do (they cut risk).
 
         The owner may waive the gate; every entry checked while waived is audited with the
         current (unproven) paper record so the decision stays on file."""
-        proof = self.proof()
+        source = self.longshot_proof if longshot else self.proof
+        name = self.settings.longshot_strategy if longshot else self.settings.proof_strategy
+        proof = source() if source is not None else {"proven": False, "reason": "no paper record"}
         if not self.settings.require_paper_proof:
             self.ledger.audit(self.clock(), "paper_proof_waived", {"route": route, **proof})
             return
         if proof.get("proven") is not True:
             self.ledger.audit(self.clock(), "entry_blocked_unproven", {"route": route, **proof})
             raise GuardError(
-                f"real-money entries are blocked until the '{self.settings.proof_strategy}' "
+                f"real-money entries are blocked until the '{name}' "
                 f"paper strategy proves profitable: {proof.get('reason', 'no paper record')}"
             )
 
@@ -147,7 +160,12 @@ class ExecutionService:
             latest = max((order["created_ms"] for order in self.ledger.orders()), default=0)
             if as_of < latest:
                 raise GuardError("broker account data predates the last submission")
-            self.ledger.account(as_of, account["balance"], account["positions"])
+            self.ledger.account(
+                as_of,
+                account["balance"],
+                account["positions"],
+                account.get("resting_client_ids", ()),
+            )
         except (Exception, asyncio.CancelledError) as error:
             self.ledger.pause(
                 self.clock(),
@@ -176,6 +194,12 @@ class ExecutionService:
                 "autopilot_available": self.decide is not None and self.tickers is not None,
                 "autopilot_last": self.autopilot_last,
                 "autopilot_every_s": self.settings.autopilot_every_s,
+                "longshot_available": self.longshot_quotes is not None,
+                "longshot_last": self.longshot_last,
+                "longshot_paper_proof": {
+                    "strategy": self.settings.longshot_strategy,
+                    **(self.longshot_proof() if self.longshot_proof is not None else {}),
+                },
                 "scope": (
                     "Caps cover orders routed here; separate manual trades are outside these caps."
                 ),
@@ -185,6 +209,7 @@ class ExecutionService:
         async with self.lock:
             if action == "pause":
                 self.ledger.pause(self.clock())
+                await self.cancel_resting("paused")
             elif action == "resume":
                 self.enabled()
                 await self.refresh()
@@ -211,6 +236,178 @@ class ExecutionService:
                     )
             self.ledger.set_autopilot(enabled, self.clock())
             return self.ledger.status()
+
+    async def set_longshot(self, enabled: bool) -> dict[str, Any]:
+        async with self.lock:
+            if enabled:
+                self.enabled()
+                if self.longshot_quotes is None:
+                    raise GuardError("the long-shot pilot is not configured on this server")
+            self.ledger.set_autopilot(enabled, self.clock(), kind="longshot")
+            if not enabled:
+                await self.cancel_resting("long-shot pilot switched off")
+            return self.ledger.status()
+
+    def resting(self) -> list[dict[str, Any]]:
+        return [o for o in self.ledger.orders(unresolved_only=True) if o["resting"]]
+
+    async def cancel_resting(
+        self, reason: str, keep: Callable[[dict[str, Any]], bool] = lambda o: False
+    ) -> list[dict[str, Any]]:
+        """Cancel our resting orders (all, or those `keep` rejects), then reconcile. A cancel
+        that fails pauses execution; Kalshi still expires the order before close."""
+        notes = []
+        for order in self.resting():
+            if keep(order):
+                continue
+            note = {"ticker": order["intent"]["ticker"], "at_ms": self.clock()}
+            try:
+                if order["order_id"]:
+                    await self.broker.cancel(order["order_id"])
+                note["outcome"] = f"canceled: {reason}"
+            except Exception as error:
+                note["outcome"] = f"cancel failed: {type(error).__name__}"
+                self.ledger.pause(self.clock(), "resting order cancel failed; check Kalshi")
+            self.ledger.audit(self.clock(), "longshot_cancel", note)
+            notes.append(note)
+        if notes:
+            with suppress(Exception):
+                await self.refresh()
+        return notes
+
+    async def longshot_step(self) -> list[dict[str, Any]]:
+        """One pilot pass: mirror the paper long-shot seller's current sales with small real
+        post-only bids. Orders it no longer wants are canceled first; new ones need fresh
+        account data, the live book to match, and room under every cap."""
+        if self.longshot_quotes is None:
+            return []
+        async with self.lock:
+            state = self.ledger.status()
+            on = (
+                state["longshot"]
+                and self.settings.enabled
+                and not state["paused"]
+                and not state["unknown_or_pending"]
+            )
+            wanted = {q["ticker"]: q for q in self.longshot_quotes()} if on else {}
+
+            def still_wanted(order: dict[str, Any]) -> bool:
+                q = wanted.get(order["intent"]["ticker"])
+                return q is not None and order["intent"] == self._longshot_intent(q).model_dump()
+
+            notes = await self.cancel_resting("the paper strategy no longer sells it", still_wanted)
+            if on:
+                notes += await self._longshot_place(wanted)
+            if notes:
+                self.longshot_last = notes[-50:]
+            return notes
+
+    def _longshot_intent(self, q: dict[str, Any]) -> Intent:
+        return Intent(
+            ticker=q["ticker"],
+            action="buy",
+            side=q["side"],
+            quantity=self.settings.longshot_contracts,
+            limit_price=f"{Decimal(dollars(q['price'])):.4f}",
+        )
+
+    async def _longshot_place(self, wanted: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        notes: list[dict[str, Any]] = []
+        held = {p["ticker"] for p in self.ledger.status()["positions"]}
+        working = {o["intent"]["ticker"] for o in self.resting()}
+        for q in sorted(wanted.values(), key=lambda q: -q["seconds_left"]):
+            ticker = q["ticker"]
+            if ticker in held or ticker in working:
+                continue  # never adds to a held market; one order per market
+            note: dict[str, Any] = {"ticker": ticker, "at_ms": self.clock(), "side": q["side"]}
+            notes.append(note)
+            if len(working) >= self.settings.longshot_max_orders:
+                note["outcome"] = "skipped: resting-order limit reached"
+                break
+            try:
+                await self._longshot_order(q, note)
+                if note["outcome"].startswith("resting"):
+                    working.add(ticker)
+            except GuardError as error:
+                note["outcome"] = f"refused: {error}"
+            self.ledger.audit(self.clock(), "longshot_order", note)
+        return notes
+
+    async def _longshot_order(self, q: dict[str, Any], note: dict[str, Any]) -> None:
+        ticker = q["ticker"]
+        intent = self._longshot_intent(q)
+        event = ticker.rsplit("-", 1)[0]
+        if self._event_commitment(event) + debit(intent) > (
+            self.settings.longshot_event_cents * DOLLAR // 100
+        ):
+            raise GuardError("per-close limit reached for this hour")
+        expires_s = q["close_ms"] // 1000 - self.settings.longshot_expire_s
+        if expires_s - self.clock() / 1000 < 30:
+            raise GuardError("too close to the pilot's cut-off before close")
+        self.require_proof("longshot", longshot=True)
+        await self.refresh()
+        quote = await self.broker.quote(ticker, q["series"])
+        market = quote["market"]
+        if market["status"] != "active":
+            raise GuardError("market not active")
+        if quote["bids"][q["side"]][0] != intent.price:
+            raise GuardError("live book moved; the paper price is no longer the best bid")
+        if not any(
+            money(r["start"]) <= intent.yes_price <= money(r["end"])
+            and (intent.yes_price - money(r["start"])) % money(r["step"]) == 0
+            for r in market.get("price_ranges") or []
+            if money(r["step"]) > 0
+        ):
+            raise GuardError("price not on current market tick grid")
+        key = f"longshot-{uuid.uuid4().hex}"
+        order = self.ledger.reserve_resting(
+            key,
+            intent,
+            {"quote": q, "observed_ms": quote["observed_ms"]},
+            self.clock(),
+            self.settings.account_max_age_ms,
+        )
+        try:
+            receipt = await self.broker.submit(
+                intent,
+                self.client_id(order),
+                quote["observed_ms"] + self.settings.data_max_age_ms,
+                resting_until_s=expires_s,
+            )
+        except BrokerRejectedError as error:
+            self.ledger.mark(key, "rejected", self.clock(), local_rejection=not error.dispatched)
+            note["outcome"] = f"rejected: {error}"
+            return
+        except (Exception, asyncio.CancelledError):
+            self.ledger.mark(key, "unknown", self.clock())
+            self.ledger.pause(self.clock(), "submission outcome unknown; reconciliation required")
+            raise
+        self.ledger.mark(key, "accepted", self.clock(), receipt["order_id"])
+        note["outcome"] = (
+            f"resting {intent.side.upper()} bid {intent.limit_price} x {intent.quantity}"
+        )
+        with suppress(Exception):
+            await self.refresh()
+
+    def _event_commitment(self, event: str) -> int:
+        """Money at risk on every strike of one close: held cost plus resting reservations."""
+        held = sum(
+            p["cost"]
+            for p in self.ledger.status()["positions"]
+            if p["ticker"].rsplit("-", 1)[0] == event
+        )
+        resting = sum(
+            max(0, money(o["reserved_debit"]) - money(o["fill_cost"]) - money(o["fees"]))
+            for o in self.resting()
+            if o["intent"]["ticker"].rsplit("-", 1)[0] == event
+        )
+        return int(held) + resting
+
+    async def run_longshot(self) -> None:
+        while True:
+            with suppress(Exception):
+                await self.longshot_step()
+            await asyncio.sleep(self.settings.longshot_every_s)
 
     async def autopilot_step(self) -> list[dict[str, Any]]:
         """One autopilot pass: for each tradable market, review it, ask Jev only if the

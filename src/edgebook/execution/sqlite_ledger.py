@@ -6,7 +6,8 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+import uuid
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,16 @@ class SQLiteLedger:
             self.event(db, at, kind, body)
 
     @staticmethod
+    def resting_remainders(db: sqlite3.Connection) -> dict[str, tuple[str, int]]:
+        """Unfilled contracts of our resting maker orders: ticker -> (side, units)."""
+        out: dict[str, tuple[str, int]] = {}
+        for row in db.execute("SELECT * FROM orders WHERE status='resting'"):
+            intent = Intent.model_validate_json(json.loads(row["body"])["intent_json"])
+            side, units = out.get(intent.ticker, (intent.side, 0))
+            out[intent.ticker] = (side, units + intent.units - row["filled"])
+        return out
+
+    @staticmethod
     def unresolved(db: sqlite3.Connection) -> bool:
         return (
             db.execute(
@@ -154,12 +165,12 @@ class SQLiteLedger:
         self.limits = limits
         return limits
 
-    def set_autopilot(self, enabled: bool, now: int) -> None:
+    def set_autopilot(self, enabled: bool, now: int, kind: str = "autopilot") -> None:
         with self.transaction() as db:
             state = self.state(db)
-            state["autopilot"] = enabled
+            state[kind] = enabled
             self.save_state(db, state)
-            self.event(db, now, "autopilot", {"enabled": enabled})
+            self.event(db, now, kind, {"enabled": enabled})
 
     def pause(self, now: int, reason: str = "user paused") -> None:
         with self.transaction() as db:
@@ -176,17 +187,39 @@ class SQLiteLedger:
             self.save_state(db, state)
             self.event(db, now, "resume", {"unattended": bool(state.get("autopilot", False))})
 
-    def account(self, now: int, balance: int, positions: Mapping[str, int]) -> None:
+    def account(
+        self,
+        now: int,
+        balance: int,
+        positions: Mapping[str, int],
+        resting_client_ids: Collection[str] = (),
+    ) -> None:
         with self.transaction() as db:
             expected = {
                 row["ticker"]: row["units"] * (1 if row["side"] == "yes" else -1)
                 for row in db.execute("SELECT * FROM positions WHERE units>0")
             }
             actual = {ticker: units for ticker, units in positions.items() if units}
-            if actual != expected:
-                raise GuardError(
-                    "account positions differ from routed ledger; reconcile manual activity"
+            # A resting maker order can fill between our order read and this account read:
+            # allow the position to be ahead of the ledger by at most its unfilled remainder,
+            # on its side. The next reconciliation applies those fills.
+            slack = self.resting_remainders(db)
+            for ticker in set(expected) | set(actual):
+                want, have = expected.get(ticker, 0), actual.get(ticker, 0)
+                side, room = slack.get(ticker, ("yes", 0))
+                ahead = (have - want) * (1 if side == "yes" else -1)
+                if have != want and not (0 < ahead <= room and have * want >= 0):
+                    raise GuardError(
+                        "account positions differ from routed ledger; reconcile manual activity"
+                    )
+            ours = {
+                str(uuid.uuid5(uuid.NAMESPACE_URL, row["proposal_id"]))
+                for row in db.execute(
+                    "SELECT proposal_id FROM orders WHERE status IN ('resting','accepted')"
                 )
+            }
+            if not set(resting_client_ids) <= ours:
+                raise GuardError("resting account orders not placed here require operator review")
             if self.unresolved(db):
                 raise GuardError("unknown or pending order status requires reconciliation")
             state = self.state(db)
@@ -286,7 +319,7 @@ class SQLiteLedger:
             intent = Intent.model_validate_json(json.loads(row["body"])["intent_json"])
             if intent.action == "buy":
                 spent += row["cost"] + row["fees"]
-                if row["status"] in {"pending", "accepted", "unknown"}:
+                if row["status"] in {"pending", "accepted", "unknown", "resting"}:
                     remainder = max(0, row["reserved"] - row["cost"] - row["fees"])
                     pending += remainder
                     spent += remainder
@@ -340,21 +373,12 @@ class SQLiteLedger:
             reserved = debit(intent)
             if reserved > self.limits.order_debit_cents * CENT:
                 raise GuardError("fee-inclusive per-order debit cap")
-            spent, exposure = self.totals(db)
+            _, exposure = self.totals(db)
             position = db.execute(
                 "SELECT * FROM positions WHERE ticker=?", (intent.ticker,)
             ).fetchone()
             if intent.action == "buy":
-                if position and position["units"] and position["side"] != intent.side:
-                    raise GuardError("entry would offset opposite position")
-                if spent + reserved > self.limits.purchase_spend_cents * CENT:
-                    raise GuardError("cumulative purchase-spend cap")
-                if exposure + reserved > self.limits.open_exposure_cents * CENT:
-                    raise GuardError("open exposure cap")
-                if state["loss"] + exposure + reserved > self.limits.realized_loss_cents * CENT:
-                    raise GuardError("realized-loss cap including worst-case open loss")
-                if reserved > state["balance"]:
-                    raise GuardError("insufficient available balance")
+                self.check_entry(db, state, intent, reserved)
             elif (
                 not position or position["side"] != intent.side or position["units"] < intent.units
             ):
@@ -402,6 +426,67 @@ class SQLiteLedger:
             ).fetchone()
             return self.order_view(result), True
 
+    def check_entry(
+        self, db: sqlite3.Connection, state: Mapping[str, Any], intent: Intent, reserved: int
+    ) -> None:
+        """Every money cap for a buy that reserves `reserved` (its worst-case debit)."""
+        spent, exposure = self.totals(db)
+        position = db.execute("SELECT * FROM positions WHERE ticker=?", (intent.ticker,)).fetchone()
+        if position and position["units"] and position["side"] != intent.side:
+            raise GuardError("entry would offset opposite position")
+        if spent + reserved > self.limits.purchase_spend_cents * CENT:
+            raise GuardError("cumulative purchase-spend cap")
+        if exposure + reserved > self.limits.open_exposure_cents * CENT:
+            raise GuardError("open exposure cap")
+        if state["loss"] + exposure + reserved > self.limits.realized_loss_cents * CENT:
+            raise GuardError("realized-loss cap including worst-case open loss")
+        if reserved > state["balance"]:
+            raise GuardError("insufficient available balance")
+
+    def reserve_resting(
+        self, key: str, intent: Intent, context: dict[str, Any], now: int, max_age: int
+    ) -> dict[str, Any]:
+        """Reserve a resting maker buy (long-shot pilot) under the same caps as a confirmed
+        order. The whole worst-case debit stays reserved while the order rests, so the caps
+        hold even if every resting order fills and loses."""
+        if intent.action != "buy":
+            raise GuardError("the pilot only rests buy orders")
+        with self.transaction() as db:
+            state = self.state(db)
+            self.limits = Limits.model_validate(state["limits"])
+            if state["paused"]:
+                raise GuardError("execution paused")
+            self.check_account(db, state, now, max_age)
+            if db.execute("SELECT 1 FROM orders WHERE key=?", (key,)).fetchone():
+                raise GuardError("order key already used")
+            if intent.ticker in self.resting_remainders(db):
+                raise GuardError("already resting an order in this market")
+            if not 0 < intent.units <= self.limits.max_contracts * 100:
+                raise GuardError("quantity cap")
+            if not 0 < intent.price < DOLLAR:
+                raise GuardError("invalid price")
+            reserved = debit(intent)
+            if reserved > self.limits.order_debit_cents * CENT:
+                raise GuardError("fee-inclusive per-order debit cap")
+            self.check_entry(db, state, intent, reserved)
+            body = {
+                "intent_json": intent.model_dump_json(),
+                "proposal_id": key,
+                "resting": True,
+                "decision": {"action": "longshot_pilot"},
+                "context": context,
+            }
+            db.execute(
+                "INSERT INTO orders(key,proposal_id,body,status,reserved,created,updated)"
+                " VALUES(?,?,?,'pending',?,?,?)",
+                (key, key, json.dumps(body), reserved, now, now),
+            )
+            state["account_ms"] = 0
+            self.save_state(db, state)
+            self.event(db, now, "reservation", {"key": key, "reserved": reserved, **body})
+            row = db.execute("SELECT * FROM orders WHERE key=?", (key,)).fetchone()
+            return self.order_view(row)
+
     @staticmethod
     def order_view(row: sqlite3.Row) -> dict[str, Any]:
         body = json.loads(row["body"])
@@ -424,6 +509,7 @@ class SQLiteLedger:
             "fill_cost": dollars(row["cost"]),
             "fees": dollars(row["fees"]),
             "reserved_debit": dollars(row["reserved"]),
+            "resting": bool(body.get("resting")),
             "created_ms": row["created"],
         }
 
@@ -431,7 +517,7 @@ class SQLiteLedger:
         with self.connection() as db:
             query = "SELECT * FROM orders"
             if unresolved_only:
-                query += " WHERE status IN ('pending','accepted','unknown')"
+                query += " WHERE status IN ('pending','accepted','unknown','resting')"
             return [self.order_view(row) for row in db.execute(query + " ORDER BY created")]
 
     def mark(
@@ -446,7 +532,7 @@ class SQLiteLedger:
             raise GuardError("invalid order status")
         with self.transaction() as db:
             row = db.execute("SELECT * FROM orders WHERE key=?", (key,)).fetchone()
-            if row is None or row["status"] not in {"pending", "accepted", "unknown"}:
+            if row is None or row["status"] not in {"pending", "accepted", "unknown", "resting"}:
                 raise GuardError("order not pending")
             if status == "rejected" and (row["order_id"] or row["filled"]):
                 raise GuardError("accepted order cannot be released as rejected")
@@ -471,7 +557,9 @@ class SQLiteLedger:
             row = db.execute("SELECT * FROM orders WHERE key=?", (key,)).fetchone()
             if row is None or row["order_id"] not in {None, order_id}:
                 raise GuardError("unknown or mismatched broker order")
-            intent = Intent.model_validate_json(json.loads(row["body"])["intent_json"])
+            body = json.loads(row["body"])
+            intent = Intent.model_validate_json(body["intent_json"])
+            maker = bool(body.get("resting"))
             total_units = sum(fill["units"] for fill in fills)
             total_cost = sum(fill["cost"] for fill in fills)
             total_fees = sum(fill["fee"] for fill in fills)
@@ -543,7 +631,7 @@ class SQLiteLedger:
                 "UPDATE orders SET status=?,order_id=?,filled=?,cost=?,fees=?,updated=? "
                 "WHERE key=?",
                 (
-                    status if status != "resting" else "accepted",
+                    status if status != "resting" or maker else "accepted",
                     order_id,
                     total_units,
                     total_cost,
@@ -560,7 +648,7 @@ class SQLiteLedger:
         if not 0 <= yes_value <= DOLLAR:
             raise GuardError("invalid settlement value")
         with self.transaction() as db:
-            if self.unresolved(db):
+            if self.unresolved(db) or ticker in self.resting_remainders(db):
                 raise GuardError("orders must be reconciled before settlement")
             existing = db.execute(
                 "SELECT body FROM settlements WHERE ticker=?", (ticker,)
@@ -604,6 +692,8 @@ class SQLiteLedger:
                 "realized_pnl": dollars(state["pnl"]),
                 "available_balance": dollars(state["balance"]),
                 "unknown_or_pending": self.unresolved(db),
+                "longshot": bool(state.get("longshot", False)),
+                "resting_orders": len(self.resting_remainders(db)),
                 "positions": [
                     dict(row) for row in db.execute("SELECT * FROM positions WHERE units>0")
                 ],
