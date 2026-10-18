@@ -45,7 +45,7 @@ test("extension reads Kalshi pages only and has no broker/gateway credential sur
   assert.match(source, /idempotency_key: idempotencyKey/);
 });
 
-function popupHarness(storage, fetch) {
+function popupHarness(storage, fetch, timers = []) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -70,7 +70,7 @@ function popupHarness(storage, fetch) {
     await new AsyncFunction("document", "chrome", "fetch", "setInterval", "formatOrder",
       "proposalText", "validBase", "exactQuantity", "plainOutcome", "engineLines", "clock",
       source.slice(source.indexOf("\n") + 1))(
-      { getElementById: element }, chrome, fetch, () => {}, formatOrder, proposalText, validBase, exactQuantity,
+      { getElementById: element }, chrome, fetch, (cb, ms) => timers.push([cb, ms]), formatOrder, proposalText, validBase, exactQuantity,
       plainOutcome, engineLines, clock,
     );
   } };
@@ -228,6 +228,9 @@ test("autopilot outcomes read as plain sentences", () => {
   assert.match(plainOutcome({ outcome: "already holding this market: autopilot never adds" }), /never buys more/);
   assert.match(plainOutcome({ outcome: "error: HTTPStatusError" }), /usable answer from Jev \(HTTPStatusError\)/);
   assert.match(plainOutcome({ outcome: "refused: market closed or outside model horizon" }), /^Blocked by a safety check: market closed/);
+  assert.match(plainOutcome({ outcome: "refused: account positions differ from routed ledger; reconcile manual activity" }),
+    /holds a trade autopilot didn't make \(a manual trade\)\. It resumes by itself/);
+  assert.match(plainOutcome({ outcome: "refused: engine book and executable quote differ" }), /^Skipped: prices moved/);
   assert.equal(plainOutcome({ outcome: "order executed", jev: { action: "enter_yes", confidence: 0.81 },
     order: { intent: { action: "buy", side: "yes" }, status: "executed", filled_quantity: "1.00",
       fill_cost: "0.4000", fees: "0.0200" } }),
@@ -235,4 +238,34 @@ test("autopilot outcomes read as plain sentences", () => {
   assert.deepEqual(engineLines(undefined), []);
   assert.equal(clock(65.4), "1:05");
   assert.equal(clock(-3), "0:00");
+});
+
+test("popup keeps refreshing and says so when a refresh fails", async () => {
+  let at = Date.now() - 60000;
+  let fail = false;
+  const fetch = async (url) => {
+    if (fail && url.endsWith("action=status")) {
+      return new Response(JSON.stringify({ error: "fixture outage" }), { status: 503, headers: { "Content-Type": "application/json" } });
+    }
+    const result = url.endsWith("action=status") ? { configured: true, enabled: true, paused: false,
+      autopilot: true, autopilot_available: true, account_updated_ms: Date.now(), limits: {},
+      autopilot_last: [{ at_ms: at, ticker: "KXBTC15M-A", outcome: "no trade: engine sees no edge after fees" }] }
+      : { data: { updated_ms: Date.now(), calls: [] } };
+    return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  };
+  const timers = [];
+  const storage = { local: { base: "https://fixture-dashboard.test", passcode: "fixture-password" }, session: {} };
+  const popup = popupHarness(storage, fetch, timers);
+  await popup.open();
+  const refresh = timers.find(([, ms]) => ms === 5000)[0];
+  at = Date.now();
+  await refresh();
+  assert.equal(popup.element("autopilot-log").textContent.split("\n").length, 2);  // new check on top
+  fail = true;
+  await refresh();
+  assert.equal(popup.element("now-updated").textContent, "NOT UPDATING");
+  assert.match(popup.element("message").textContent, /Couldn't refresh from the server: fixture outage/);
+  fail = false;
+  await refresh();
+  assert.match(popup.element("now-updated").textContent, /^updated /);
 });
