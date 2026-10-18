@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 import uuid
@@ -10,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from decimal import Decimal
 from typing import Any, Literal, Protocol
+
+import httpx
 
 from edgebook.execution.broker import BrokerRejectedError, timestamp
 from edgebook.execution.live_ledger import (
@@ -167,11 +170,40 @@ class ExecutionService:
                 account.get("resting_client_ids", ()),
             )
         except (Exception, asyncio.CancelledError) as error:
+            temporary = (
+                isinstance(error, (httpx.TransportError, OSError, TimeoutError))
+                or (
+                    isinstance(error, httpx.HTTPStatusError)
+                    and (error.response.status_code == 429 or error.response.status_code >= 500)
+                )
+                or (
+                    isinstance(error, GuardError)
+                    and str(error)
+                    in {
+                        "broker account data is stale",
+                        "broker account data predates the last submission",
+                    }
+                )
+            ) and not self.ledger.status()["unknown_or_pending"]
+            self.ledger.audit(
+                self.clock(),
+                "reconciliation_failed",
+                {
+                    "error_type": type(error).__name__,
+                    "temporary": temporary,
+                    "http_status": error.response.status_code
+                    if isinstance(error, httpx.HTTPStatusError)
+                    else None,
+                },
+            )
             self.ledger.pause(
                 self.clock(),
-                str(error)
+                "Temporary broker connection issue; retrying automatically"
+                if temporary
+                else str(error)
                 if isinstance(error, GuardError)
                 else "broker reconciliation unavailable",
+                recoverable=temporary,
             )
             raise
 
@@ -567,7 +599,17 @@ class ExecutionService:
 
     async def run_reconciliation(self) -> None:
         while True:
-            await self.status()
+            try:
+                async with self.lock:
+                    await self.refresh()
+                    if self.settings.enabled:
+                        self.ledger.recover_if_ready(self.clock(), self.settings.account_max_age_ms)
+            except Exception as error:
+                # refresh records and classifies the failure. Keep checking;
+                # one unavailable broker read must not kill this background task.
+                logging.getLogger(__name__).warning(
+                    "Recovery check failed: %s", type(error).__name__
+                )
             await asyncio.sleep(5)
 
     def position(self, ticker: str) -> dict[str, Any] | None:

@@ -283,10 +283,12 @@ function engineReadiness(d, execution) {
   const waiting = remaining > 0;
   const execPaused = execution?.paused === true;
   const execUnknown = !execution || !execution.configured || !execution.enabled || execution.unknown_or_pending;
-  const mode = execUnknown ? "CHECKING" : execPaused ? "PAUSED" : "ACTIVE";
+  const mode = execUnknown ? "CHECKING" : execPaused ? execution.auto_recovery ? "RECOVERING" : "PAUSED" : "ACTIVE";
   const modeTone = execUnknown || execPaused ? "warn" : "good";
   const detail = execUnknown
     ? "Execution status is loading. No order can be submitted until it is confirmed."
+    : execPaused && execution.auto_recovery
+      ? `Temporary broker interruption. Retrying every 5 seconds · ${execution.recovery_checks || 0}/3 clean account checks before automatic recovery.`
     : execPaused
       ? "Live execution is paused. The engine can watch markets but cannot send an order."
       : execution.autopilot || execution.longshot
@@ -624,7 +626,7 @@ async function positions(root) {
   }
   if (!d.configured) return root.append(empty("Live execution is not configured."));
   root.append(el("div", { class: "banner" },
-    `${d.environment === "production" ? "Real money" : "Demo"} · ${d.paused ? "Stopped" : d.autopilot || d.longshot ? "Automatic trading" : "Manual trading"}${d.error ? ` · ${d.error}` : ""}. Values below are from the execution ledger reconciled with Kalshi, separate from paper accounts.`));
+    `${d.environment === "production" ? "Real money" : "Demo"} · ${d.paused ? d.auto_recovery ? `Recovering (${d.recovery_checks || 0}/3 clean checks)` : "Stopped" : d.autopilot || d.longshot ? "Automatic trading" : "Manual trading"}${d.error ? ` · ${d.error}` : ""}. Values below are from the execution ledger reconciled with Kalshi, separate from paper accounts.`));
   root.append(el("div", { class: "cards" },
     card("Available cash", fmt.usd(d.available_balance), "on execution account", "Reported available broker balance."),
     card("Open capital at risk", fmt.usd(d.open_exposure), `${d.resting_orders || 0} resting orders`, "Position cost plus unfilled order reservations, including reserved fees."),

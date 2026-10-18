@@ -54,6 +54,7 @@ export async function handle(message) {
           "error", "reason", "remaining_purchase_budget", "open_exposure", "realized_pnl",
           "account_updated_ms", "environment", "autopilot_last", "longshot_last",
           "positions", "limits", "resting_orders",
+          "auto_recovery", "recovery_checks", "pause_kind",
         ].map((key) => [key, source[key]])) : null;
         return { ok: true, live: live.status === "fulfilled" ? live.value.data.data : null,
           execution, checked_ms: Date.now(),

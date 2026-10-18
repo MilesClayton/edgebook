@@ -149,7 +149,15 @@ class SQLiteLedger:
                 (now,),
             )
             state = self.state(db)
-            state.update(paused=True, account_ms=0, generation=state["generation"] + 1)
+            state.update(
+                paused=True,
+                account_ms=0,
+                generation=state["generation"] + 1,
+                pause_kind="restart",
+                auto_recovery=False,
+                recovery_checks=0,
+                error="server restarted; press Start after reconciliation",
+            )
             self.save_state(db, state)
             self.event(db, now, "restart", {"paused": True})
 
@@ -169,21 +177,84 @@ class SQLiteLedger:
         with self.transaction() as db:
             state = self.state(db)
             state[kind] = enabled
+            if not (state.get("autopilot") or state.get("longshot")) and state.get("auto_recovery"):
+                state.update(
+                    auto_recovery=False,
+                    recovery_checks=0,
+                    pause_kind="manual",
+                    error="automatic trading switched off",
+                )
             self.save_state(db, state)
             self.event(db, now, kind, {"enabled": enabled})
 
-    def pause(self, now: int, reason: str = "user paused") -> None:
+    def pause(self, now: int, reason: str = "user paused", *, recoverable: bool = False) -> None:
         with self.transaction() as db:
             state = self.state(db)
-            state.update(paused=True, generation=state["generation"] + 1, error=reason)
+            # A transient failure cannot overwrite an owner's Stop or turn a
+            # latched safety/restart pause into permission to trade again.
+            if recoverable and state["paused"]:
+                if state.get("auto_recovery"):
+                    state.update(error=reason, recovery_checks=0, recovery_last_ms=0)
+                    self.save_state(db, state)
+                self.event(db, now, "recovery_retry_failed", {"reason": reason})
+                return
+            recover = bool(recoverable and (state.get("autopilot") or state.get("longshot")))
+            state.update(
+                paused=True,
+                generation=state["generation"] + 1,
+                error=reason,
+                pause_kind="temporary"
+                if recover
+                else "manual"
+                if reason == "user paused"
+                else "safety",
+                auto_recovery=recover,
+                recovery_checks=0,
+                recovery_last_ms=0,
+            )
             self.save_state(db, state)
-            self.event(db, now, "pause", {"reason": reason})
+            self.event(db, now, "pause", {"reason": reason, "recoverable": recover})
+
+    def recover_if_ready(self, now: int, max_age: int) -> bool:
+        """Resume only an automatically interrupted run, after three spaced checks."""
+        with self.transaction() as db:
+            state = self.state(db)
+            if not (
+                state["paused"]
+                and state.get("auto_recovery")
+                and (state.get("autopilot") or state.get("longshot"))
+            ):
+                return False
+            self.check_account(db, state, now, max_age)
+            if now - state.get("recovery_last_ms", 0) < 5000:
+                return False
+            state["recovery_last_ms"] = now
+            state["recovery_checks"] = state.get("recovery_checks", 0) + 1
+            resumed = bool(state["recovery_checks"] >= 3)
+            if resumed:
+                state.update(
+                    paused=False,
+                    error="",
+                    pause_kind="",
+                    auto_recovery=False,
+                    generation=state["generation"] + 1,
+                )
+                self.event(db, now, "auto_resumed", {"clean_checks": state["recovery_checks"]})
+            self.save_state(db, state)
+            return resumed
 
     def resume(self, now: int, max_age: int) -> None:
         with self.transaction() as db:
             state = self.state(db)
             self.check_account(db, state, now, max_age)
-            state.update(paused=False, error="", generation=state["generation"] + 1)
+            state.update(
+                paused=False,
+                error="",
+                generation=state["generation"] + 1,
+                pause_kind="",
+                auto_recovery=False,
+                recovery_checks=0,
+            )
             self.save_state(db, state)
             self.event(db, now, "resume", {"unattended": bool(state.get("autopilot", False))})
 
@@ -685,6 +756,9 @@ class SQLiteLedger:
             return {
                 "paused": state["paused"],
                 "generation": state["generation"],
+                "pause_kind": state.get("pause_kind", ""),
+                "auto_recovery": bool(state.get("auto_recovery", False)),
+                "recovery_checks": state.get("recovery_checks", 0),
                 "autopilot": bool(state.get("autopilot", False)),
                 "account_updated_ms": state["account_ms"],
                 "error": state["error"],
