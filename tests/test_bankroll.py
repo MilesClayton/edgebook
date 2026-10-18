@@ -40,9 +40,11 @@ def test_payoff_fee_matches_kalshi_schedule() -> None:
         p = Payoff(price, 0.5, role)
         assert p.fee == float(trade_fee(1, Decimal(f"{price:.4f}"), role))
     p = Payoff(0.5, 0.55, TAKER)
-    assert p.fee == pytest.approx(0.02)
-    assert p.cost == pytest.approx(0.52)
-    assert p.edge == pytest.approx(0.03)
+    taker = float(trade_fee(1, Decimal("0.5"), TAKER))  # 1.75c before Kalshi's rounding
+    assert p.fee == pytest.approx(taker)
+    assert 0.0175 <= taker <= 0.02
+    assert p.cost == pytest.approx(0.5 + taker)
+    assert p.edge == pytest.approx(0.05 - taker)
     assert p.reserve == pytest.approx(0.5 + 0.0276)
     assert pytest.approx(0.0276) == FEE_RESERVE
 
@@ -56,7 +58,7 @@ def test_at_edge_spreads_edge_by_upside() -> None:
     assert max(ratios) == pytest.approx(min(ratios))  # same Kelly fraction everywhere
     assert all(p.win_prob < 1 for p in seller.payoffs)
     with pytest.raises(ValueError, match="mean upside"):
-        longshot_seller(0.08)
+        longshot_seller(0.09)  # above 1 - mean price (8.25c) under any fee
     with pytest.raises(ValueError, match="win_prob"):
         Payoff.with_edge(0.97, 0.05, MAKER)
 
@@ -69,11 +71,13 @@ def test_payoff_rejects_bad_inputs(price: float, win: float) -> None:
 
 def test_mix_statistics() -> None:
     mix = coinflip_taker(0.01)
+    cost = 0.5 + float(trade_fee(1, Decimal("0.5"), TAKER))
+    win = cost + 0.01
     assert mix.edge == pytest.approx(0.01)
-    assert mix.win_prob == pytest.approx(0.53)
+    assert mix.win_prob == pytest.approx(win)
     assert mix.price == pytest.approx(0.5)
-    assert mix.sd == pytest.approx(math.sqrt(0.53 * 0.47))
-    assert mix.gross_loss_rate == pytest.approx(0.47 * 0.52)
+    assert mix.sd == pytest.approx(math.sqrt(win * (1 - win)))
+    assert mix.gross_loss_rate == pytest.approx((1 - win) * cost)
     seller = longshot_seller(0.0)
     assert 0.9 < seller.win_prob < 0.96
     assert seller.edge == pytest.approx(0.0, abs=1e-12)
@@ -150,13 +154,14 @@ def test_validation_of_bar_and_scenario() -> None:
 
 
 def test_sure_winner_doubles_on_schedule() -> None:
-    # 10 contracts at 50c that always win: +$4.80/close; $100 -> $200 after 21 closes
+    # 10 contracts at 50c that always win: +$4.80/close at a 2c fee; $100 -> $200 in 21 closes
     sc = Scenario(mix_of(0.5, 1.0), Sizing("contracts", 10), Caps(100, accounting="net"), 24, 1)
     res = simulate(sc, SHORT, paths=50)
+    gain = 10 * (0.5 - float(trade_fee(1, Decimal("0.5"), TAKER)))
     assert res.p_target == 1.0
     assert res.p_ruin == res.p_stalled == 0.0
     assert res.median_days_to_target == 1
-    assert res.median_final_multiple == pytest.approx(2.008)
+    assert res.median_final_multiple == pytest.approx((100 + math.ceil(100 / gain) * gain) / 100)
     assert res.passes
 
 

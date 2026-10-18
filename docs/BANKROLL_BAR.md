@@ -139,6 +139,14 @@ Long-shot estimates are in ¢ per filled contract (`docs/LONGSHOT_GAPS.md`). The
 simulated at 24 closes a day, $500, ρ = 1, sizing as a believer in the strategy would
 (Kelly declines to bet at zero or negative edge).
 
+> **Fee correction pending (`docs/KALSHI_INCENTIVES.md`, the `research/kalshi-incentives`
+> branch):** BTC series charge makers no fee, but the backfill estimates below charged 1¢ per
+> filled sale, so each backfill row is 1.00¢ too low. Corrected, all filled firings are
+> −0.06¢ and the 15–60 minute rule is +0.56¢ on earlier closes and −0.89¢ on later ones.
+> All of these are still below the ~1¢ the bar needs, so the verdict stands. This simulator
+> also takes its fees from `engine.decide.fee`, so the required-edge tables shift slightly
+> once that fix merges.
+
 | Evidence | Edge | Net, 1%/close: P(2x) / P(ruin) / median end | Net, 2%/close: P(2x) / P(ruin) / median end | Ledger as built, 2%/close: P(stalled) |
 |---|---:|---|---|---:|
 | Paper long-shot account, 172 trades (size-weighted) | −1.06¢ | 0% / 0.05% / 0.79× | 0% / 29% / 0.60× | 100% |
