@@ -23,7 +23,13 @@ from typing import Any
 import numpy as np
 
 from edgebook.engine.decide import Call, EngineConfig, evaluate, fee
-from edgebook.engine.maker import LongshotConfig, MakerBook, MakerConfig, quote_longshot
+from edgebook.engine.maker import (
+    LongshotConfig,
+    MakerBook,
+    MakerConfig,
+    longshot_quote,
+    quote_longshot,
+)
 from edgebook.engine.paper import PaperAccount, RiskConfig
 from edgebook.engine.state import LiveState, MarketInfo
 from edgebook.model.calibration import mean_ci
@@ -148,6 +154,46 @@ def load_fit(directory: Path) -> dict[str, Any] | None:
         return None
     fit["model_weight"] = min(max(w, 0.0), 1.0)
     return dict(fit)
+
+
+def longshot_log_rows(r: StrategyRunner, t: int) -> list[dict[str, Any]]:
+    """One row per market where the long-shot band and time window apply, whether or not
+    fair value lets the rule sell and whether or not it fills, with the engine's fair value
+    at that moment (``research.longshot_fair_value`` tests fair-value margins on these).
+    Paper-only: nothing here changes what the strategy does."""
+    cfg = r.spec.longshot
+    out = []
+    for c in r.calls:
+        if c.fair_up is None or not cfg.min_secs_left <= c.seconds_left <= cfg.max_secs_left:
+            continue
+        if c.up_price is not None and cfg.min_ask <= c.up_price <= cfg.max_ask:
+            long_is_up, long_ask, fair_long = True, c.up_price, c.fair_up
+        elif c.down_price is not None and cfg.min_ask <= c.down_price <= cfg.max_ask:
+            long_is_up, long_ask, fair_long = False, c.down_price, 1 - c.fair_up
+        else:
+            continue
+        order = r.maker.orders.get(c.ticker) if r.maker else None
+        held = r.account.holdings.get(c.ticker)
+        out.append(
+            {
+                "ts_ms": t,
+                "ticker": c.ticker,
+                "series": c.series,
+                "seconds_left": round(c.seconds_left, 1),
+                "long_is_up": long_is_up,
+                "long_ask": long_ask,
+                "fair_long": round(fair_long, 6),
+                "edge": round(long_ask - fair_long, 6),  # favourite fair - price paid
+                "model_up": c.model_up,
+                "market_up": c.market_up,
+                "model_weight": r.cfg.model_weight,
+                "fires": longshot_quote(c, cfg) is not None,  # the current rule would sell
+                "resting_price": order.price if order else None,
+                "held_contracts": held.contracts if held else 0.0,
+                "data_ok": all(c.gates.get(k, False) for k in LONGSHOT_DATA_GATES),
+            }
+        )
+    return out
 
 
 class LiveEngine:
@@ -469,12 +515,22 @@ class LiveEngine:
             for c in self.primary.calls
             if c.model_up is not None
         ]
+        day = datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%d")
+        self._append_log(self.decision_log_dir / f"{day}.jsonl", rows)
+        for r in self.runners:
+            if r.spec.mode == "longshot":
+                self._append_log(
+                    self.decision_log_dir / r.spec.name / f"{day}.jsonl",
+                    longshot_log_rows(r, t),
+                )
+
+    @staticmethod
+    def _append_log(path: Path, rows: list[dict[str, Any]]) -> None:
         if not rows:
             return
-        day = datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%d")
         try:
-            self.decision_log_dir.mkdir(parents=True, exist_ok=True)
-            with (self.decision_log_dir / f"{day}.jsonl").open("a") as fh:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
                 fh.writelines(json.dumps(row) + "\n" for row in rows)
         except OSError:
             log.exception("decision log write failed")

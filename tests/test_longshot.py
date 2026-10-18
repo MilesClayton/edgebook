@@ -1,5 +1,6 @@
 """The long-shot seller: quoting rule, event cap, fills and the research helpers."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,7 +10,12 @@ import pytest
 
 from edgebook.core.types import LiquidityRole
 from edgebook.engine.decide import Call, EngineConfig, evaluate, fee, fill_fee
-from edgebook.engine.loop import DEFAULT_STRATEGIES, LONGSHOT_EVERY_MS, LiveEngine
+from edgebook.engine.loop import (
+    DEFAULT_STRATEGIES,
+    LONGSHOT_EVERY_MS,
+    LiveEngine,
+    longshot_log_rows,
+)
 from edgebook.engine.maker import LongshotConfig, MakerBook, longshot_quote, quote_longshot
 from edgebook.engine.paper import PaperAccount
 from edgebook.engine.state import LiveState, MarketInfo
@@ -107,6 +113,34 @@ def test_engine_longshot_seller_fills_and_settles(tmp_path: Path) -> None:
     eng.settle(m.ticker, "no")
     assert eng.account.realized == pytest.approx(300 * (1 - 0.96) - fill_fee(0.96, 300, MAKER))
     assert eng.paper_payload()["risk"]["max_open_markets"] == 40
+
+
+def test_engine_logs_every_longshot_firing_with_fair_value(tmp_path: Path) -> None:
+    s, m = hourly_world()
+    eng = LiveEngine(
+        s, tmp_path / "p.json", clock=lambda: NOW, strategies=[SPEC], decision_log_dir=tmp_path
+    )
+    [c] = eng.tick()
+    assert c.fair_up is not None
+    [path] = (tmp_path / "longshot").glob("*.jsonl")
+    [row] = [json.loads(x) for x in path.read_text().splitlines()]
+    assert row["ticker"] == m.ticker
+    assert (row["long_is_up"], row["long_ask"], row["fires"]) == (True, 0.04, True)
+    assert row["fair_long"] == pytest.approx(c.fair_up, abs=1e-6)
+    assert row["edge"] == pytest.approx(0.04 - c.fair_up, abs=1e-6)
+    assert row["resting_price"] == 0.96
+    assert (row["held_contracts"], row["data_ok"], row["model_weight"]) == (0.0, True, 0.2)
+    r = eng.runners[0]
+    r.calls = [
+        call(0.97, 0.05, 0.94),  # DOWN long shot that fair value says is worth its price
+        call(0.30, 0.71, 0.29),  # not a long shot
+        call(0.04, 0.97, 0.02, left=100),  # too close to the close
+        call(0.04, 0.97, None),  # no fair value
+    ]
+    [down] = longshot_log_rows(r, NOW)
+    assert (down["long_is_up"], down["long_ask"], down["fires"]) == (False, 0.05, False)
+    assert down["edge"] == pytest.approx(0.05 - 0.06)
+    assert down["resting_price"] is None
 
 
 def test_engine_longshot_says_why_not(tmp_path: Path) -> None:
