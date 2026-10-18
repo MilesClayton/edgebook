@@ -47,7 +47,7 @@ JUMP_COOLDOWN_MS = 10_000  # one event per market per jump, not one per tick
 
 
 def taker_fee(price: float, contracts: int = 100) -> float:
-    """Per-contract taker fee for a ``contracts``-lot (Kalshi rounds the total up to a cent)."""
+    """Per-contract taker fee for a ``contracts``-lot (Kalshi rounds the total up once)."""
     p = min(max(price, 0.0), 1.0)
     return float(trade_fee(contracts, Decimal(f"{p:.4f}"), LiquidityRole.TAKER)) / contracts
 

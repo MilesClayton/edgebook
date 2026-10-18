@@ -14,7 +14,8 @@ def test_fill_fee_handles_tiny_fractional_fills() -> None:
     from edgebook.core.types import LiquidityRole
     from edgebook.engine.decide import fill_fee
 
-    assert fill_fee(0.96, 0.004, LiquidityRole.MAKER) == pytest.approx(0.01)  # rounds up, no crash
+    assert fill_fee(0.96, 0.004, LiquidityRole.TAKER) == pytest.approx(0.0001)  # rounds up
+    assert fill_fee(0.96, 0.004, LiquidityRole.MAKER) == 0.0  # BTC makers pay nothing
     assert fill_fee(0.5, 0, LiquidityRole.TAKER) == 0.0
     assert fill_fee(0.5, 100, LiquidityRole.TAKER) == pytest.approx(1.75)
 

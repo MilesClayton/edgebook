@@ -77,6 +77,6 @@ def test_skips_are_counted() -> None:
 
 
 def test_taker_rule() -> None:
-    assert taker_pnl(0.70, 0.48, 0.50, 1, 0.02) == pytest.approx(1 - 0.50 - 0.02)
-    assert taker_pnl(0.30, 0.50, 0.52, 0, 0.02) == pytest.approx(1 - 0.50 - 0.02)
+    assert taker_pnl(0.70, 0.48, 0.50, 1, 0.02) == pytest.approx(1 - 0.50 - 0.0175)
+    assert taker_pnl(0.30, 0.50, 0.52, 0, 0.02) == pytest.approx(1 - 0.50 - 0.0175)
     assert taker_pnl(0.51, 0.49, 0.51, 1, 0.0) is None
