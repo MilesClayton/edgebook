@@ -6,6 +6,8 @@ The Python recorder now has a real order adapter and a durable execution ledger.
 
 ## Current popup controls
 
+**Temporary interruptions recover automatically.** A network timeout, rate limit, broker 5xx response, or stale account read interrupts an already running automatic strategy without canceling its authorization. The recorder retries every five seconds and resumes after three spaced successful account reconciliations. Both views show RECOVERING and the clean-check count. Any failed check resets the count. Manual Stop, switching both strategies off, an unresolved order, account mismatch, failed cancellation, and server restarts remain paused until owner action. Recovery never submits an order itself; the existing strategy performs its normal checks on its next pass.
+
 The popup has **Live** and **Help & details** tabs. Save a dollar budget, choose Jev, long-shot, or both, then press **Start live trading**. Saving a budget pauses execution and cancels resting bids; it never activates trading. Start atomically configures the approach, reconciles, and resumes. Stop is available during other requests and blocks new authorizations while canceling resting orders. Existing fills remain open.
 
 The capital budget is reusable: open cost and fee reservations plus gross realized losses must fit the saved allowance. Closing positions releases capital; losses continue to consume the allowance. Lifetime buy spending is still recorded and is never reset. Legacy cumulative-spend caps remain available in advanced controls. Server freshness, account reconciliation, fee bounds, and sufficient executable liquidity remain mandatory.

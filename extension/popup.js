@@ -180,7 +180,7 @@ function render(data, quiet = false) {
     && Date.now() - data.account_updated_ms <= 5000;
   element("mode").textContent = data.environment ? data.environment.toUpperCase() : "SETUP";
   element("account").hidden = !data.configured;
-  element("state").textContent = data.paused ? "STOPPED" : data.autopilot || data.longshot ? "RUNNING" : "MANUAL";
+  element("state").textContent = data.paused ? data.auto_recovery ? "RECOVERING" : "STOPPED" : data.autopilot || data.longshot ? "RUNNING" : "MANUAL";
   element("state").className = `pill${data.paused ? " paused" : data.autopilot ? " on" : ""}`;
   element("now-updated").textContent = `updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
   const limits = data.limits || {};
@@ -203,11 +203,13 @@ function render(data, quiet = false) {
   element("scope").textContent = data.scope || "";
   renderAutopilot(data);
   renderLongshot(data);
-  if (data.paused) element("autopilot-state").textContent = "Trading stopped";
+  if (data.paused) element("autopilot-state").textContent = data.auto_recovery ? "Waiting for Kalshi · auto-retry on" : "Trading stopped";
   else if (data.longshot && !data.autopilot) element("autopilot-state").textContent = "Long-shot bids are running";
   else if (data.autopilot) element("autopilot-state").textContent = "Jev is watching your markets";
   else element("autopilot-state").textContent = "Ready when you are";
-  if (data.error) element("now-outcome").textContent = plainOutcome({ outcome: `refused: ${data.error}` });
+  if (data.error) element("now-outcome").textContent = data.auto_recovery
+    ? `Retrying every 5 seconds · ${data.recovery_checks || 0}/3 clean account checks. Trading resumes automatically when healthy.`
+    : plainOutcome({ outcome: `refused: ${data.error}` });
   element("positions").textContent = (data.positions || []).map((position) =>
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
   ).join("\n") || "No routed positions.";
