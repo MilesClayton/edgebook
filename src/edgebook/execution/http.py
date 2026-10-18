@@ -58,11 +58,12 @@ def add_routes(
                 "reconcile",
                 "limits",
                 "autopilot",
+                "longshot",
             } and (request.method == "POST"):
                 if request.content_type != "application/json":
                     raise GuardError("application/json required")
                 payload = await request.json()
-                if action in {"limits", "autopilot"}:
+                if action in {"limits", "autopilot", "longshot"}:
                     key = "limits" if action == "limits" else "enabled"
                     if (
                         not isinstance(payload, dict)
@@ -74,6 +75,8 @@ def add_routes(
                         result = await service.set_limits(Limits.model_validate(payload["limits"]))
                     elif not isinstance(payload["enabled"], bool):
                         raise GuardError("enabled must be true or false")
+                    elif action == "longshot":
+                        result = await service.set_longshot(payload["enabled"])
                     else:
                         result = await service.set_autopilot(payload["enabled"])
                     return web.json_response(result, headers=headers)
