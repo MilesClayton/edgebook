@@ -71,8 +71,15 @@ class FixtureBroker:
             "bids": {"yes": (self.yes_bid, self.depth), "no": (self.no_bid, self.depth)},
         }
 
+    async def cancel(self, order_id: str) -> None:
+        raise AssertionError("IOC fixture orders never rest")
+
     async def submit(
-        self, selected: Intent, client_id: str, deadline_ms: int | None = None
+        self,
+        selected: Intent,
+        client_id: str,
+        deadline_ms: int | None = None,
+        resting_until_s: int | None = None,
     ) -> dict[str, Any]:
         self.submissions += 1
         if self.failure == "reject":

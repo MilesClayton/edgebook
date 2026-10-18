@@ -227,7 +227,8 @@ async def test_account_and_quote_fail_closed(signer: KalshiSigner) -> None:
         ("/exchange/status", {"trading_active": False, "exchange_active": True}),
         ("/portfolio/balance", {"balance": -1}),
         ("/portfolio/balance", {"balance": True}),
-        ("/portfolio/orders", {"orders": [wire_order()]}),
+        # resting orders are returned, and the ledger refuses any it did not place
+        # (test_execution_longshot.test_ledger_account_tolerates_only_our_resting_fills)
         (
             "/portfolio/positions",
             {

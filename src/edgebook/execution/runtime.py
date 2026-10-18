@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import socket
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
 
@@ -16,6 +17,7 @@ from edgebook.engine.decide import Position, evaluate
 from edgebook.engine.loop import LiveEngine
 from edgebook.execution.broker import KalshiBroker
 from edgebook.execution.live_ledger import GuardError, LiveSettings
+from edgebook.execution.longshot import longshot_quotes
 from edgebook.execution.proof import paper_proof
 from edgebook.execution.service import ExecutionService
 from edgebook.execution.sqlite_ledger import SQLiteLedger
@@ -130,6 +132,36 @@ def build_service(
                 response.raise_for_status()
                 return dict(response.json())
 
+        seller = next(
+            (
+                r
+                for r in engine.runners
+                if r.spec.name == settings.longshot_strategy and r.spec.mode == "longshot"
+            ),
+            None,
+        )
+
+        sales: Callable[[], list[dict[str, Any]]] | None = None
+        seller_proof: Callable[[], dict[str, Any]] | None = None
+        if seller is not None:
+            paper = seller
+
+            def sales() -> list[dict[str, Any]]:
+                return longshot_quotes(
+                    paper.calls,
+                    engine.state.markets,
+                    paper.spec.longshot,
+                    settings.series,
+                    engine.clock(),
+                    paper.last_tick_ms,
+                    settings.data_max_age_ms,
+                )
+
+            def seller_proof() -> dict[str, Any]:
+                return paper_proof(
+                    paper.account.closed, settings.proof_min_trades, settings.proof_min_days
+                )
+
         service = ExecutionService(
             settings,
             ledger,
@@ -139,6 +171,8 @@ def build_service(
             proof=proof,
             decide=decide,
             tickers=tickers if decide is not None else None,
+            longshot_quotes=sales,
+            longshot_proof=seller_proof,
         )
         return service, broker, owner
     except BaseException:

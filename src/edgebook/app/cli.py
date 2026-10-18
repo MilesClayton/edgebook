@@ -152,6 +152,7 @@ async def record(settings: Settings) -> None:
                 )
                 recorder.background.append(execution.run_reconciliation)
                 recorder.background.append(execution.run_autopilot)  # idle until switched on
+                recorder.background.append(execution.run_longshot)  # idle until switched on
             except (GuardError, OSError, ValueError) as error:
                 disabled_reason = str(error)
                 log.error("execution disabled: %s", disabled_reason)
