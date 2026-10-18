@@ -16,25 +16,52 @@
     <button id="connect">Connect</button>
   </section>
   <section id="account" hidden>
-    <p id="state"></p>
-    <div class="metrics"><div>Purchase budget left<strong id="budget">—</strong></div><div>Open exposure<strong id="exposure">—</strong></div><div>Realized loss<strong id="loss">—</strong></div></div>
+    <div class="now">
+      <div class="now-top"><span id="state" class="pill"></span><span id="now-updated" class="muted"></span></div>
+      <p id="autopilot-state" class="headline">Off: nothing is bought without your Buy click.</p>
+      <p id="now-market" class="muted"></p>
+      <p id="now-outcome"></p>
+      <pre id="now-engine" hidden></pre>
+    </div>
+    <div class="row"><button id="autopilot-on">Turn autopilot ON</button><button id="autopilot-off" class="secondary">Turn autopilot OFF</button></div>
+    <div class="row"><button id="resume" class="secondary">Resume trading</button><button id="pause" class="secondary">Pause everything</button><button id="reconcile" class="secondary">Re-check with Kalshi</button></div>
+
+    <h2>Money</h2>
+    <div class="money">
+      <div><span>Spent on purchases</span><strong id="spent">—</strong></div>
+      <progress id="bar-spend" max="1" value="0"></progress>
+      <p class="muted"><span id="budget">—</span> left. Total of every buy incl. fees; it doesn't go back down when you sell.</p>
+      <div><span>Money in open positions</span><strong id="exposure">—</strong></div>
+      <progress id="bar-exposure" max="1" value="0"></progress>
+      <div><span>Losses so far</span><strong id="loss">—</strong></div>
+      <progress id="bar-loss" max="1" value="0" class="danger"></progress>
+      <p class="muted">When losses reach the cap, all new buying stops.</p>
+    </div>
     <p class="muted" id="caps"></p>
-    <p id="scope" class="muted"></p>
-    <h2>Positions</h2><div id="positions">No routed positions.</div>
-    <div class="row"><button id="resume">Resume trading</button><button id="pause" class="secondary">Pause</button><button id="reconcile" class="secondary">Reconcile</button></div>
-    <h2>Autopilot</h2>
-    <p id="autopilot-state" class="muted">Off: nothing is bought without your Buy click.</p>
-    <div class="row"><button id="autopilot-on">Turn autopilot ON</button><button id="autopilot-off" class="secondary">Turn OFF</button></div>
-    <pre id="autopilot-log" hidden></pre>
-    <details id="caps-editor"><summary>Money caps (edit)</summary>
-      <label>Total purchases (USD)<input id="cap-spend" type="number" min="1" step="1"></label>
-      <label>Open exposure (USD)<input id="cap-exposure" type="number" min="1" step="1"></label>
-      <label>Total loss: stops new buys (USD)<input id="cap-loss" type="number" min="1" step="1"></label>
-      <label>Per order (USD)<input id="cap-order" type="number" min="1" step="1"></label>
+    <details id="caps-editor"><summary>Change the money caps</summary>
+      <label>Total purchases, ever (USD)<input id="cap-spend" type="number" min="1" step="1"><span class="muted">The most autopilot and you can spend in total.</span></label>
+      <label>Open positions at once (USD)<input id="cap-exposure" type="number" min="1" step="1"><span class="muted">Most money tied up in unsettled contracts.</span></label>
+      <label>Total loss before stopping (USD)<input id="cap-loss" type="number" min="1" step="1"><span class="muted">Reach this and new buys stop.</span></label>
+      <label>Per order (USD)<input id="cap-order" type="number" min="1" step="1"><span class="muted">Most one order may cost, incl. fees.</span></label>
       <label>Contracts per order (max)<input id="cap-contracts" type="number" min="1" step="1"></label>
-      <button id="save-caps" class="secondary">Save caps</button>
-      <p class="muted">Raising a cap adds room; spend and losses so far are kept. Every change is logged.</p>
+      <button id="save-caps">Save caps</button>
+      <p class="muted">Raising a cap adds room; spending and losses so far are kept. Every change is logged.</p>
     </details>
+
+    <h2>Positions</h2><div id="positions">No routed positions.</div>
+
+    <h2>Autopilot history</h2>
+    <pre id="autopilot-log">No checks yet.</pre>
+    <details><summary>How autopilot decides</summary>
+      <ol class="muted">
+        <li>Every <span id="every-s">15</span> s it looks at the current BTC 15-minute market.</li>
+        <li>Data checks first: fresh BTC index, live Kalshi prices, enough history, tight spread. Any fail → wait.</li>
+        <li>The engine prices UP and DOWN. Only if one side is cheaper than the engine's estimate by more than fees + a safety buffer is Jev asked.</li>
+        <li>Jev sees the engine's numbers plus the trade tape, order-book depth and BTC momentum (what Kalshi Pro shows), and picks buy, hold or skip.</li>
+        <li>A buy goes through every cap above. 1 contract, never adds to a market it already holds.</li>
+      </ol>
+    </details>
+    <p id="scope" class="muted"></p>
   </section>
   <section>
     <h2>Ask Jev</h2>

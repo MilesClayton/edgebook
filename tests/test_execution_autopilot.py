@@ -82,9 +82,20 @@ async def test_autopilot_skips_without_edge_and_survives_errors(harness: Harness
     harness.fair = 0.70
     assert (await service.autopilot_step())[0]["outcome"] == "Jev chose skip: no order"
     assert (await service.autopilot_step())[0]["outcome"] == "error: RuntimeError"
+    note = (await service.autopilot_step())[0]
+    assert note["engine"]["fair_up"] == 0.70
+    assert note["engine"]["edge_needed"] == pytest.approx(
+        harness.settings.min_edge + harness.settings.latency_buffer
+    )
+    harness.gates = {"warmup": False, "index": True}
+    note = (await service.autopilot_step())[0]
+    assert note["outcome"] == "refused: deterministic data-quality gates failed: warmup"
+    assert note["engine"]["failed_gates"] == ["warmup"]  # the popup names what it waits for
+    harness.gates = {"warmup": True, "index": True}
     harness.index_age = 99999
     assert (await service.autopilot_step())[0]["outcome"].startswith("refused: ")
     assert harness.broker.submissions == 0
+    assert (await service.status())["autopilot_every_s"] == harness.settings.autopilot_every_s
 
 
 async def test_autopilot_requires_decision_url(harness: Harness) -> None:
