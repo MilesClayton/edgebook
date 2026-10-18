@@ -26,6 +26,7 @@ from edgebook.config import KALSHI_URLS, Settings, assert_live_trading_allowed
 from edgebook.core.fees import trade_fee
 from edgebook.core.types import LiquidityRole
 from edgebook.engine.loop import DEFAULT_STRATEGIES, FITTED_WEIGHT_FILE, LiveEngine
+from edgebook.engine.seed import seed_index
 from edgebook.engine.state import LiveState
 from edgebook.execution.live_ledger import GuardError, LiveSettings
 from edgebook.execution.runtime import build_service
@@ -65,6 +66,8 @@ def attach_engine(settings: Settings, recorder: Recorder, store: Path) -> LiveEn
     """Run the live decision engine + one $500k paper account per strategy inside the
     recorder."""
     state = LiveState()
+    # a restart (deploy, secret change) keeps the recorded index history: no 15-min warm-up
+    seed_index(state, settings.data_dir, int(time.time() * 1000))
     engine_dir = settings.data_dir / "engine"
     engine = LiveEngine(
         state,
