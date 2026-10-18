@@ -39,6 +39,8 @@ class FixtureBroker:
         self.age = 0
         self.depth = 10000
         self.market_status = "active"
+        self.settlement_value: str | None = "1.0000"
+        self.result: str | None = None
         self.quote_age = 0
         self.close_offset = 300
 
@@ -61,7 +63,12 @@ class FixtureBroker:
             "status": self.market_status,
             "close_time": datetime.fromtimestamp(NOW / 1000 + self.close_offset, UTC).isoformat(),
             "price_ranges": [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}],
-            "settlement_value_dollars": "1.0000",
+            **(
+                {}
+                if self.settlement_value is None
+                else {"settlement_value_dollars": self.settlement_value}
+            ),
+            **({} if self.result is None else {"result": self.result}),
         }
 
     async def quote(self, ticker: str, series: str) -> dict[str, Any]:
@@ -248,7 +255,7 @@ async def test_partial_fill_and_authoritative_settlement(harness: Harness) -> No
     assert result["filled_quantity"] == "0.37"
     assert result["status"] == "canceled"
     assert harness.ledger.status()["positions"][0]["units"] == 37
-    harness.broker.market_status = "settled"
+    harness.broker.market_status = "finalized"
     harness.broker.positions = {}
     await harness.service.control("reconcile")
     status = harness.ledger.status()
@@ -448,7 +455,7 @@ async def test_skip_outcome_is_logged_without_a_trade(harness: Harness) -> None:
     await harness.proposal("skip")
     assert harness.broker.submissions == 0
     harness.clock[0] += 301000
-    harness.broker.market_status = "settled"
+    harness.broker.market_status = "finalized"
     await harness.service.control("reconcile")
     assert harness.ledger.due_outcomes(harness.clock[0]) == []
     with harness.ledger.connection() as db:
@@ -472,3 +479,46 @@ async def test_status_decides_account_freshness_for_the_panel(harness: Harness) 
     stale = await harness.service.status()
     assert stale["account_fresh"] is False
     assert stale["account_age_ms"] > harness.settings.account_max_age_ms
+
+
+@pytest.mark.parametrize(
+    ("status", "settles"),
+    [
+        ("finalized", True),
+        ("determined", True),  # the payout is published at determination
+        ("amended", True),  # a corrected result is still a result
+        ("disputed", False),  # contested: do not pay out on it
+        ("closed", False),  # trading stopped, no result yet
+        ("active", False),
+        ("settled", False),  # not a status Kalshi reports; never treat it as resolved
+    ],
+)
+async def test_positions_settle_on_the_real_market_lifecycle(
+    harness: Harness, status: str, settles: bool
+) -> None:
+    """Kalshi's market status enum is initialized/inactive/active/closed/determined/
+    disputed/amended/finalized. Comparing against "settled" never matched, so a resolved
+    market left its position open in the panel forever."""
+    await harness.service.control("resume")
+    harness.broker.fill_units = 37
+    await harness.service.confirm(harness.confirm(await harness.proposal()))
+    assert harness.ledger.status()["positions"][0]["units"] == 37
+
+    # Kalshi drops the position and credits cash once a market resolves; until then it
+    # still reports it, and the ledger must keep agreeing with that.
+    harness.broker.market_status = status
+    harness.broker.positions = {} if settles else {TICKER: 37}
+    await harness.service.control("reconcile")
+    assert bool(harness.ledger.status()["positions"] == []) is settles
+
+
+async def test_resolved_market_without_a_payout_is_refused(harness: Harness) -> None:
+    await harness.service.control("resume")
+    harness.broker.fill_units = 37
+    await harness.service.confirm(harness.confirm(await harness.proposal()))
+    harness.broker.market_status = "finalized"
+    harness.broker.settlement_value = None
+    harness.broker.result = "void"
+    harness.broker.positions = {}
+    with pytest.raises(GuardError, match="no final payout"):
+        await harness.service.control("reconcile")
