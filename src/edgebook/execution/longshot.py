@@ -33,7 +33,7 @@ def longshot_quotes(
             or call.series not in series
             or not all(call.gates.get(k, False) for k in LONGSHOT_DATA_GATES)
             or call.index_age_ms is None
-            or call.index_age_ms > max_index_age_ms
+            or not 0 <= call.index_age_ms + now_ms - last_tick_ms <= max_index_age_ms
         ):
             continue
         quote = longshot_quote(call, cfg)

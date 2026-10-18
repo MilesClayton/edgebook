@@ -1,48 +1,38 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Edgebook</title>
-  <link rel="stylesheet" href="popup.css">
-</head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Edgebook</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-  <header><strong>EDGEBOOK</strong><span id="mode">Connecting…</span></header>
-  <p class="muted">Jev decisions · Kalshi orders</p>
+<header><div class="brand"><span class="brand-mark" aria-hidden="true">e</span><div><strong>edgebook</strong><span class="muted">Your trading cockpit</span></div></div><span id="mode" class="pill">Connecting…</span></header>
+<nav class="tabs" aria-label="Popup pages"><button id="tab-live" class="active" aria-pressed="true">Live</button><button id="tab-help" aria-pressed="false">Help & details</button></nav>
   <section id="setup">
     <p class="muted">One-time setup: remembered on this machine.</p>
     <label>Dashboard address<input id="base" type="url" value="https://dashboard-ten-murex-53tctwc6fk.vercel.app" autocomplete="off"></label>
     <label>Dashboard password<input id="passcode" type="password" autocomplete="off"></label>
     <button id="connect">Connect</button>
   </section>
-  <section id="account" hidden>
-    <div class="now">
-      <div class="now-top"><span id="state" class="pill"></span><span id="now-updated" class="muted"></span></div>
-      <p id="autopilot-state" class="headline">Off: nothing is bought without your Buy click.</p>
-      <p id="now-market" class="muted"></p>
-      <p id="now-outcome"></p>
-      <pre id="now-engine" hidden></pre>
-    </div>
-    <div class="row"><button id="autopilot-on">Turn autopilot ON</button><button id="autopilot-off" class="secondary">Turn autopilot OFF</button></div>
-    <h2>Long-shot seller (real money)</h2>
-    <p id="longshot-state" class="headline">Off: no resting orders.</p>
-    <p id="longshot-proof" class="muted"></p>
-    <div class="row"><button id="longshot-on">Turn long-shot seller ON</button><button id="longshot-off" class="secondary">Turn it OFF (cancels its orders)</button></div>
-    <pre id="longshot-log">No orders yet.</pre>
-    <div class="row"><button id="resume" class="secondary">Resume trading</button><button id="pause" class="secondary">Pause everything</button><button id="reconcile" class="secondary">Re-check with Kalshi</button></div>
 
-    <h2>Money</h2>
-    <div class="money">
-      <div><span>Spent on purchases</span><strong id="spent">—</strong></div>
-      <progress id="bar-spend" max="1" value="0"></progress>
-      <p class="muted"><span id="budget">—</span> left. Total of every buy incl. fees; it doesn't go back down when you sell.</p>
-      <div><span>Money in open positions</span><strong id="exposure">—</strong></div>
-      <progress id="bar-exposure" max="1" value="0"></progress>
-      <div><span>Losses so far</span><strong id="loss">—</strong></div>
-      <progress id="bar-loss" max="1" value="0" class="danger"></progress>
-      <p class="muted">When losses reach the cap, all new buying stops.</p>
-    </div>
-    <p class="muted" id="caps"></p>
+<main id="page-live">
+<section id="account" hidden>
+  <div class="now"><div class="now-top"><span id="state" class="pill"></span><span id="now-updated" class="muted"></span></div>
+    <h1 id="autopilot-state">Connect to see the engine</h1><p id="now-market" class="muted"></p><p id="now-outcome"></p><pre id="now-engine" hidden></pre>
+  </div>
+  <div class="stats"><div><span>Available cash</span><strong id="cash">—</strong></div><div><span>Open positions</span><strong id="exposure">—</strong></div><div><span>Profit / loss</span><strong id="pnl">—</strong></div></div>
+  <div class="budget-card"><label for="simple-budget">Trading budget</label><div class="budget-input"><span aria-hidden="true">$</span><input id="simple-budget" type="number" min="0.01" max="1000000" step="0.01" inputmode="decimal" placeholder="20.00" aria-describedby="budget-help"><button id="save-budget" class="secondary">Save</button></div>
+    <p id="budget-help" class="muted">Your maximum capital at risk, including fees. Closing a position frees room; losses reduce it. Saving never resets past spending or losses.</p>
+    <div class="budget-row"><span id="budget">—</span><span class="muted">available to use</span></div><progress id="bar-exposure" max="1" value="0" aria-label="Budget in use"></progress>
+    <label for="strategy">Trading approach</label><select id="strategy"><option value="autopilot">Jev · automatic buys and sells</option><option value="both">Jev + long-shot bids</option><option value="longshot">Long-shot · hold to settlement</option></select>
+    <p id="strategy-help" class="muted">Jev checks BTC 15-minute and hourly markets. Browser tabs may be closed.</p>
+    <div class="run-controls"><button id="start-trading">Start live trading</button><button id="pause" class="stop">Stop</button></div>
+    <p class="muted">Start authorizes automatic real-money orders within the saved budget. Stop blocks new orders and cancels resting bids; filled positions stay open.</p>
+  </div>
+  <div class="section-heading"><h2>Open positions</h2><a id="dashboard-link" target="_blank" rel="noopener">Dashboard ↗</a></div><div id="positions" class="positions empty">No routed positions.</div>
+  <p id="scope" class="muted"></p>
+</section>
+</main>
+<main id="page-help" hidden>
+  <section><h2>How it works</h2><ol class="help-steps"><li><strong>Save a budget.</strong> This is the most capital the bot may risk, including open positions, reserved orders, and realized losses.</li><li><strong>Choose an approach, then Start.</strong> Jev can buy, hold, or sell and choose small, medium, or maximum affordable size. Long-shot rests bids on favourites and normally holds them to the result.</li><li><strong>Watch its reason.</strong> Waiting is a decision. Stale data, no liquidity, insufficient budget, or an unresolved order prevents a new order.</li></ol><p class="muted">Orders run on the server across supported BTC markets. You do not need extra Kalshi tabs. Manual Kalshi trades are separate and can pause reconciliation.</p><p class="muted">A high win rate can still lose money: long-shot bids risk much more than they earn on each win. Paper results remain available on the dashboard.</p></section>
+  <section><h2>Connection & recovery</h2><div class="row"><button id="resume" class="secondary">Resume</button><button id="reconcile" class="secondary">Refresh account</button></div><p class="muted">After a restart, the engine pauses until the account is reconciled and you press Start or Resume.</p><button id="forget" class="secondary" hidden>Disconnect this browser</button></section>
+  <details><summary>Strategy status & activity</summary><p id="longshot-state"></p><p id="longshot-proof" class="muted"></p><pre id="longshot-log">No orders yet.</pre><div class="row"><button id="longshot-on" class="secondary">Enable long-shot</button><button id="longshot-off" class="secondary">Disable long-shot</button></div><div class="row"><button id="autopilot-on" class="secondary">Enable Jev</button><button id="autopilot-off" class="secondary">Disable Jev</button></div><p class="muted">Jev checks every <span id="every-s">15</span> seconds.</p><pre id="autopilot-log">No checks yet.</pre></details>
+  <details><summary>Budget accounting & advanced caps</summary><p id="caps" class="muted"></p><div class="money"><div><span>Total buys since setup</span><strong id="spent">—</strong></div><progress id="bar-spend" max="1" value="0" aria-label="Cumulative buys"></progress><div><span>Realized losses</span><strong id="loss">—</strong></div><progress id="bar-loss" max="1" value="0" aria-label="Realized losses"></progress></div>
     <details id="caps-editor"><summary>Change the money caps</summary>
       <label>Total purchases, ever (USD)<input id="cap-spend" type="number" min="1" step="1"><span class="muted">The most autopilot and you can spend in total.</span></label>
       <label>Open positions at once (USD)<input id="cap-exposure" type="number" min="1" step="1"><span class="muted">Most money tied up in unsettled contracts.</span></label>
@@ -51,23 +41,8 @@
       <label>Contracts per order (max)<input id="cap-contracts" type="number" min="1" step="1"></label>
       <button id="save-caps">Save caps</button>
       <p class="muted">Raising a cap adds room; spending and losses so far are kept. Every change is logged.</p>
-    </details>
-
-    <h2>Positions</h2><div id="positions">No routed positions.</div>
-
-    <h2>Autopilot history</h2>
-    <pre id="autopilot-log">No checks yet.</pre>
-    <details><summary>How autopilot decides</summary>
-      <ol class="muted">
-        <li>Every <span id="every-s">15</span> s it looks at the current BTC 15-minute market.</li>
-        <li>Data checks first: fresh BTC index, live Kalshi prices, enough history, tight spread. Any fail → wait.</li>
-        <li>The engine prices UP and DOWN. Only if one side is cheaper than the engine's estimate by more than fees + a safety buffer is Jev asked.</li>
-        <li>Jev sees the engine's numbers plus the trade tape, order-book depth and BTC momentum (what Kalshi Pro shows), and picks buy, hold or skip.</li>
-        <li>A buy goes through every cap above. 1 contract, never adds to a market it already holds.</li>
-      </ol>
-    </details>
-    <p id="scope" class="muted"></p>
-  </section>
+    </details></details>
+  <details><summary>Manual trade review</summary>
   <section>
     <h2>Ask Jev</h2>
     <label>Market<input id="ticker" autocomplete="off" placeholder="Filled with the current BTC 15-minute market"></label>
@@ -86,9 +61,8 @@
     <pre id="proposal-details"></pre>
     <button id="confirm" disabled>Buy</button>
   </section>
-  <p id="message" role="status" aria-live="polite">Connecting…</p>
+</details>
   <details><summary>Recent orders</summary><pre id="orders">No status loaded.</pre></details>
-  <button id="forget" class="secondary" hidden>Forget saved password</button>
-  <script src="popup.js" type="module"></script>
-</body>
-</html>
+</main>
+<footer><p id="message" role="status" aria-live="polite">Connecting…</p></footer>
+<script src="popup.js" type="module"></script></body></html>

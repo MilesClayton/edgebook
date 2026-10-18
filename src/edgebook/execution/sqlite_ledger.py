@@ -223,7 +223,9 @@ class SQLiteLedger:
             if self.unresolved(db):
                 raise GuardError("unknown or pending order status requires reconciliation")
             state = self.state(db)
-            state.update(account_ms=now, balance=balance, error="")
+            state.update(account_ms=now, balance=balance)
+            if not state["paused"]:
+                state["error"] = ""
             self.save_state(db, state)
             self.event(db, now, "account", {"balance": balance, "positions": actual})
 
@@ -371,7 +373,7 @@ class SQLiteLedger:
             if not 0 < intent.price < DOLLAR:
                 raise GuardError("invalid price")
             reserved = debit(intent)
-            if reserved > self.limits.order_debit_cents * CENT:
+            if intent.action == "buy" and reserved > self.limits.order_debit_cents * CENT:
                 raise GuardError("fee-inclusive per-order debit cap")
             _, exposure = self.totals(db)
             position = db.execute(
@@ -434,7 +436,10 @@ class SQLiteLedger:
         position = db.execute("SELECT * FROM positions WHERE ticker=?", (intent.ticker,)).fetchone()
         if position and position["units"] and position["side"] != intent.side:
             raise GuardError("entry would offset opposite position")
-        if spent + reserved > self.limits.purchase_spend_cents * CENT:
+        if self.limits.capital_budget_cents is not None:
+            if state["loss"] + exposure + reserved > self.limits.capital_budget_cents * CENT:
+                raise GuardError("capital budget including fees and worst-case open loss")
+        elif spent + reserved > self.limits.purchase_spend_cents * CENT:
             raise GuardError("cumulative purchase-spend cap")
         if exposure + reserved > self.limits.open_exposure_cents * CENT:
             raise GuardError("open exposure cap")
@@ -679,13 +684,16 @@ class SQLiteLedger:
             spent, exposure = self.totals(db)
             return {
                 "paused": state["paused"],
+                "generation": state["generation"],
                 "autopilot": bool(state.get("autopilot", False)),
                 "account_updated_ms": state["account_ms"],
                 "error": state["error"],
                 "limits": self.limits.model_dump(),
                 "purchase_spend": dollars(spent),
                 "remaining_purchase_budget": dollars(
-                    max(0, self.limits.purchase_spend_cents * CENT - spent)
+                    max(0, self.limits.capital_budget_cents * CENT - state["loss"] - exposure)
+                    if self.limits.capital_budget_cents is not None
+                    else max(0, self.limits.purchase_spend_cents * CENT - spent)
                 ),
                 "open_exposure": dollars(exposure),
                 "realized_loss": dollars(state["loss"]),
@@ -697,5 +705,6 @@ class SQLiteLedger:
                 "positions": [
                     dict(row) for row in db.execute("SELECT * FROM positions WHERE units>0")
                 ],
-                "unattended_enabled": False,
+                "unattended_enabled": bool(state.get("autopilot") or state.get("longshot"))
+                and not state["paused"],
             }

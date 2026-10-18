@@ -202,7 +202,7 @@ def replay(
     for runner in engine.runners:  # settle whatever closed inside the window
         for tk in list(runner.account.holdings):
             res = markets.get(tk)
-            if res is not None and res.result:
+            if res is not None and res.result and res.info.close_ts * 1000 <= end_ms:
                 runner.account.settle(tk, res.result, end_ms)
     accounts = []
     for runner in engine.runners:

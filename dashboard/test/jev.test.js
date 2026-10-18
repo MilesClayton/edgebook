@@ -8,7 +8,7 @@ function model(answer, observe = () => {}) {
   return new Experimental_DecisionMockModelV4({
     doDecide: async (input) => {
       observe(input);
-      return { answers: { action: answer }, warnings: [], usage: { inputTokens: 10 } };
+      return { answers: { action: answer, size: { type: "choice", choice: "small", probabilities: { small: 0.8, medium: 0.15, maximum: 0.05 } } }, warnings: [], usage: { inputTokens: 10 } };
     },
   });
 }

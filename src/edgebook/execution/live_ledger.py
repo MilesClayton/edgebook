@@ -64,6 +64,7 @@ class Intent(StrictModel):
 
 
 class Limits(StrictModel):
+    capital_budget_cents: int | None = Field(default=None, gt=0, le=100_000_000)
     purchase_spend_cents: int = Field(gt=0, le=100_000_000)
     open_exposure_cents: int = Field(gt=0, le=100_000_000)
     realized_loss_cents: int = Field(gt=0, le=100_000_000)
@@ -131,11 +132,14 @@ class LiveSettings(BaseSettings):
     proof_min_days: int = Field(default=5, ge=3)
 
     def limits(self) -> Limits:
-        return Limits.model_validate({name: getattr(self, name) for name in Limits.model_fields})
+        return Limits.model_validate(
+            {name: getattr(self, name) for name in Limits.model_fields if hasattr(self, name)}
+        )
 
 
 class ModelDecision(StrictModel):
     action: Literal["enter_yes", "enter_no", "exit", "hold", "skip"]
+    size: Literal["small", "medium", "maximum"] = "small"
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     mode: Literal["gateway", "fixture"]
     model: str = Field(min_length=1, max_length=100)

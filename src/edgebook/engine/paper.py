@@ -158,6 +158,8 @@ class PaperAccount:
         """Book a (possibly partial) resting-order fill, adding to a same-side holding."""
         h = self.holdings.get(ticker)
         cost = contracts * (price + fee_each)
+        if h is None and not self.can_enter(ticker, now_ms):
+            return None
         if contracts <= 0 or cost > self.cash or (h is not None and h.side != side):
             return None
         self.cash -= cost
@@ -185,13 +187,17 @@ class PaperAccount:
         self.fills.append(f)
         return f
 
-    def sell(self, ticker: str, bids: list[Level], now_ms: int, reason: str) -> Fill | None:
+    def sell(
+        self, ticker: str, bids: list[Level], now_ms: int, reason: str, min_price: float = 0.0
+    ) -> Fill | None:
         h = self.holdings.get(ticker)
         if h is None:
             return None
         left = h.contracts
         proceeds = fees = sold = 0.0
         for lvl in bids:
+            if lvl.price < min_price:
+                break
             take = min(lvl.size, left - sold)
             if take <= 0:
                 break

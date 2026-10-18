@@ -289,7 +289,15 @@ class LiveEngine:
         for m in self.live_markets(t, r):
             call = evaluate(self.state, m, t, r.cfg, acct.position(m.ticker))
             if call.action == "SELL":
-                acct.sell(m.ticker, self.state.bids(m.ticker, call.position.side), t, call.reason)  # type: ignore[union-attr]
+                side = call.position.side  # type: ignore[union-attr]
+                threshold = call.sell_up_at if side == "yes" else call.sell_down_at
+                acct.sell(
+                    m.ticker,
+                    self.state.bids(m.ticker, side),
+                    t,
+                    call.reason,
+                    min_price=threshold if threshold is not None else 1.0,
+                )
             elif r.spec.mode == "longshot":
                 self._longshot_call(r, call, equity, t, halted)
             elif r.maker is not None:

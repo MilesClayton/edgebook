@@ -111,7 +111,7 @@ def build_service(
             return sorted(
                 m.ticker
                 for m in engine.state.markets.values()
-                if m.series in settings.autopilot_series
+                if m.series in settings.series
                 and m.open_ts <= now_s
                 and m.close_ts - now_s > settings.min_seconds_left
             )
