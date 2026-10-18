@@ -32,6 +32,20 @@ test("locates series, event and strike from Kalshi URLs", () => {
     "not a url", "https://kalshi.com/"]) assert.equal(K.locate(href), null);
 });
 
+test("reads Kalshi Pro pages, which may name the market outside the path", () => {
+  assert.deepEqual(K.locate("https://pro.kalshi.com/trade?market=KXBTC15M-26OCT171715-15"),
+    { series: "KXBTC15M", event: "KXBTC15M-26OCT171715", ticker: "KXBTC15M-26OCT171715-15" });
+  assert.deepEqual(K.locate("https://pro.kalshi.com/canvas#KXBTCD-26OCT1717"),
+    { series: "KXBTCD", event: "KXBTCD-26OCT1717", ticker: null });
+  assert.deepEqual(K.locate("https://pro.kalshi.com/screener?series=KXBTCD"),
+    { series: "KXBTCD", event: null, ticker: null });
+  // no market named (multi-market canvas): show the BTC 15-minute market autopilot trades
+  assert.deepEqual(K.locate("https://pro.kalshi.com/canvas"),
+    { series: "KXBTC15M", event: null, ticker: null, pro: true });
+  assert.deepEqual(K.locate("https://pro.kalshi.com/x?bad=%E0%A4%A"),
+    { series: "KXBTC15M", event: null, ticker: null, pro: true });
+});
+
 test("selects the page's calls and long-shot orders", () => {
   const event = K.locate("https://kalshi.com/markets/kxbtcd/x/kxbtcd-26oct1717");
   assert.deepEqual(K.callsFor(LIVE, event).map((c) => c.strike), [82099.99, 81999.99]);

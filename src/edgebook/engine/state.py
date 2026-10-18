@@ -17,6 +17,7 @@ import math
 from collections import deque
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from edgebook.core.book import BookState
 from edgebook.core.types import Side
@@ -168,6 +169,63 @@ class LiveState:
             num += w * r2
             den += w
         return math.sqrt(num / den) if den > 0 else None
+
+    def flow(self, ticker: str, now_ms: int, levels: int = 5) -> dict[str, Any]:
+        """What a pro trading screen shows for one market: the trade tape (who is buying),
+        order-book depth beyond the top level, and how fast the index is moving.
+
+        Context for Jev's decision only. The engine's prices and gates do not use it, so
+        it can make Jev skip a trade but never create one."""
+        tape: dict[str, Any] = {}
+        for label, window_s in (("last_60s", 60), ("last_5m", 300)):
+            prints = [
+                t for t in self.trades if t.ticker == ticker and t.ts_ms >= now_ms - window_s * 1000
+            ]
+            up = sum(t.count for t in prints if t.taker_side == "yes")
+            volume = up + sum(t.count for t in prints if t.taker_side == "no")
+            tape[label] = {
+                "trades": len(prints),
+                "contracts": round(volume, 2),
+                "share_bought_up": round(up / volume, 3) if volume else None,
+                "avg_up_price": round(sum(t.yes_price * t.count for t in prints) / volume, 4)
+                if volume
+                else None,
+            }
+        last = next((t for t in reversed(self.trades) if t.ticker == ticker), None)
+        tape["last_trade"] = (
+            None
+            if last is None
+            else {
+                "up_price": last.yes_price,
+                "contracts": last.count,
+                "buyer": "up" if last.taker_side == "yes" else "down",
+                "age_s": round((now_ms - last.ts_ms) / 1000, 1),
+            }
+        )
+        book: dict[str, Any] = {
+            f"buy_{name}": [
+                [round(lv.price, 4), round(lv.size, 2)] for lv in self.asks(ticker, side)[:levels]
+            ]
+            for name, side in (("up", "yes"), ("down", "no"))
+        }
+        up_depth = sum(size for _, size in book["buy_up"])
+        down_depth = sum(size for _, size in book["buy_down"])
+        book["up_share_of_depth"] = (
+            round(up_depth / (up_depth + down_depth), 3) if up_depth + down_depth else None
+        )
+        momentum: dict[str, float | None] = {}
+        current = self.index_now()
+        for label, back_s in (("index_change_60s_bps", 60), ("index_change_5m_bps", 300)):
+            past = next((v for ts, v in self.index if ts >= now_ms - back_s * 1000), None)
+            momentum[label] = (
+                round((current[1] / past - 1) * 10_000, 2) if current and past else None
+            )
+        return {
+            "tape": tape,
+            "book": book,
+            "momentum": momentum,
+            "note": "Market activity for context only; the engine's prices and gates ignore it.",
+        }
 
     def asks(self, ticker: str, side: str) -> list[Level]:
         """Levels you can BUY ``side`` at, cheapest first (from the opposite bids)."""

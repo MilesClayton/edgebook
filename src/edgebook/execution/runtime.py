@@ -89,6 +89,7 @@ def build_service(
                 "updated_ms": now,
                 "ws_age_ms": now - engine.state.ws_last_ms,
                 "call": dataclasses.asdict(call),
+                "market_flow": engine.state.flow(ticker, now),
             }
 
         proven = next((r for r in engine.runners if r.spec.name == settings.proof_strategy), None)
