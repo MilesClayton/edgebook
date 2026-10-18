@@ -56,6 +56,29 @@ def finite(value: Any, label: str) -> float:
     return float(value)
 
 
+# A market's lifecycle is initialized -> inactive -> active -> closed -> determined ->
+# finalized, with disputed and amended as exceptional branches (GET /markets/{ticker}).
+# "settled" is not one of them, so comparing against it never matched and positions stayed
+# open after their market resolved. ``result`` and ``settlement_value_dollars`` appear at
+# determination. A disputed result is deliberately excluded: it is still contested.
+RESOLVED_STATUSES = frozenset({"determined", "finalized", "amended"})
+
+
+def resolved(market: dict[str, Any]) -> bool:
+    return market.get("status") in RESOLVED_STATUSES
+
+
+def resolved_payout(market: dict[str, Any]) -> int | None:
+    """Final YES value of a resolved market, or None if it has not published one yet."""
+    if not resolved(market):
+        return None
+    value = market.get("settlement_value_dollars")
+    if value is not None:
+        return money(value)
+    result = market.get("result")
+    return money("1" if result == "yes" else "0") if result in {"yes", "no"} else None
+
+
 class ExecutionService:
     def __init__(
         self,
@@ -140,23 +163,18 @@ class ExecutionService:
         try:
             await self.reconcile()
             for ticker in self.ledger.due_outcomes(self.clock()):
-                market = await self.broker.market(ticker)
-                if market["status"] == "settled":
-                    payout = market.get("settlement_value_dollars")
-                    if payout is None and market.get("result") in {"yes", "no"}:
-                        payout = "1" if market["result"] == "yes" else "0"
-                    if payout is not None:
-                        self.ledger.record_outcome(ticker, money(payout), self.clock())
+                # Watched markets are audit-only, so an odd one must not pause execution.
+                payout = resolved_payout(await self.broker.market(ticker))
+                if payout is not None:
+                    self.ledger.record_outcome(ticker, payout, self.clock())
             for position in self.ledger.status()["positions"]:
                 market = await self.broker.market(position["ticker"])
-                if market["status"] == "settled":
-                    value = market.get("settlement_value_dollars")
-                    if value is None:
-                        result = market.get("result")
-                        if result not in {"yes", "no"}:
-                            raise GuardError("settled market has no final payout")
-                        value = "1" if result == "yes" else "0"
-                    self.ledger.settle(position["ticker"], money(value), self.clock())
+                if not resolved(market):
+                    continue
+                payout = resolved_payout(market)
+                if payout is None:
+                    raise GuardError("resolved market has no final payout")
+                self.ledger.settle(position["ticker"], payout, self.clock())
             account = await self.broker.account()
             now = self.clock()
             as_of = account["as_of_ms"]
