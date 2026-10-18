@@ -79,7 +79,7 @@ async def test_build_disabled_config_recovery_and_source(
         service.settings = settings.model_copy(update={"direct_member": False})
         with pytest.raises(GuardError, match="direct-member"):
             service.enabled()
-        with pytest.raises(GuardError, match="identity"):
+        with pytest.raises(GuardError, match="identity changed"):
             SQLiteLedger(tmp_path / "ledger.sqlite3", settings.limits(), "different")
     finally:
         await broker.close()
