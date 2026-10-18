@@ -161,9 +161,18 @@ def horizon_rows(
 
 
 async def backfill(
-    rest: KalshiRest, directory: Path, series: str, days: int, now: datetime | None = None
+    rest: KalshiRest,
+    directory: Path,
+    series: str,
+    days: int,
+    now: datetime | None = None,
+    keep_all: bool = False,
 ) -> int:
-    """Add settled events from the last ``days``; returns markets added."""
+    """Add settled events from the last ``days``; returns markets added.
+
+    ``keep_all`` keeps never-tradeable markets too: replicating a range from the
+    ladder (research.range_ladder) needs every strike, not just the near-money ones.
+    """
     now = now or datetime.now(UTC)
     markets = load_markets(directory, series)
     candles = _read(candles_path(directory, series))
@@ -181,7 +190,7 @@ async def backfill(
         got = await rest.candlesticks([m.ticker for m in ms], start=start, end=close)
         for m in ms:
             rows = candle_rows(m.ticker, got.get(m.ticker, []))
-            if any(tradeable(r["bid"], r["ask"]) for r in rows):
+            if keep_all or any(tradeable(r["bid"], r["ask"]) for r in rows):
                 markets.append(market_row(series, m))
                 candles.extend(rows)
                 added += 1

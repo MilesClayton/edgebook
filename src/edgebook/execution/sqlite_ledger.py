@@ -291,8 +291,20 @@ class SQLiteLedger:
             # allow the position to be ahead of the ledger by at most its unfilled remainder,
             # on its side. The next reconciliation applies those fills.
             slack = self.resting_remainders(db)
+            # Kalshi publishes a market's result before it pays the position out, so for a
+            # while after we settle, the account still lists the exact held units.
+            settled = {
+                row["ticker"]: json.loads(row["body"])["units"]
+                * (1 if row["side"] == "yes" else -1)
+                for row in db.execute(
+                    "SELECT s.ticker, s.body, p.side FROM settlements s"
+                    " JOIN positions p ON p.ticker=s.ticker"
+                )
+            }
             for ticker in set(expected) | set(actual):
                 want, have = expected.get(ticker, 0), actual.get(ticker, 0)
+                if not want and ticker in settled and have == settled[ticker]:
+                    continue
                 side, room = slack.get(ticker, ("yes", 0))
                 ahead = (have - want) * (1 if side == "yes" else -1)
                 if have != want and not (0 < ahead <= room and have * want >= 0):

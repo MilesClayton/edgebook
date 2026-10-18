@@ -95,7 +95,7 @@ DEFAULT_STRATEGIES: tuple[StrategySpec, ...] = (
         "maker",
         "Maker (resting bids)",
         "Same anchored fair value, but never pays the ask: rests a bid 2¢+ below fair value "
-        "(maker fee is a quarter of the taker fee), fills only when real trades hit it, "
+        "(BTC series charge makers no fee), fills only when real trades hit it, "
         "holds to the result.",
         EngineConfig(model_weight=0.2, exit_mode="take_profit", take_profit=1.0),
         mode="maker",

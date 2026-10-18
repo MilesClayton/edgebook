@@ -98,9 +98,9 @@ def test_walk_forward_never_trains_on_test_day() -> None:
 
 
 def test_price_bias_sides_are_distinct_and_fee_aware() -> None:
-    assert strategies.buy_yes_pnl(0.50, 1) == pytest.approx(1 - 0.50 - 0.02)
-    assert strategies.buy_no_pnl(0.50, 0) == pytest.approx(1 - 0.50 - 0.02)
-    assert strategies.buy_no_pnl(0.90, 1) == pytest.approx(-0.10 - 0.01)
+    assert strategies.buy_yes_pnl(0.50, 1) == pytest.approx(1 - 0.50 - 0.0175)
+    assert strategies.buy_no_pnl(0.50, 0) == pytest.approx(1 - 0.50 - 0.0175)
+    assert strategies.buy_no_pnl(0.90, 1) == pytest.approx(-0.10 - 0.0063)
     ts, close, markets, candles = world(days=12, market_noise=0.0)
     fs = features.build(markets, candles, ts, close, horizons=(5,))
     buckets = strategies.price_bias(fs)
