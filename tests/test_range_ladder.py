@@ -135,7 +135,7 @@ def test_baskets_pay_the_same_in_every_outcome() -> None:
     assert basket_payoff(tail, "buy_range") == 1
 
 
-def test_fee_matches_core_fees_with_cent_rounding() -> None:
+def test_fee_matches_core_fees() -> None:
     prices = np.array([u(p) for p in (0.01, 0.22, 0.4, 0.5, 0.97)], dtype=np.int64)
     for lot in (1, 7, 100):
         got = fee_per_contract(prices, np.full(len(prices), lot, dtype=np.int64))
@@ -232,9 +232,14 @@ def test_scan_finds_the_fee_surviving_gap_and_how_long_it_lasts() -> None:
     assert s.prefee_ms == {"buy_range": 15_000, "sell_range": 0}
     (e,) = s.episodes
     assert (e.direction, e.start_ms, e.duration_ms, e.lot) == ("buy_range", T0 + 10_000, 15_000, 10)
-    # cost 22 + 40 + 30 = 92c; fees on a 10-lot: 1.3 + 1.7 + 1.5 = 4.5c
-    assert e.max_edge == pytest.approx(0.08 - 0.045)
-    assert e.dollars == pytest.approx(10 * (0.08 - 0.045))
+    # cost 22 + 40 + 30 = 92c; fees on a 10-lot: 1.3 + 1.7 + 1.5 = 4.5c at whole cents
+    fees = sum(
+        float(trade_fee(10, Decimal(px), LiquidityRole.TAKER)) / 10
+        for px in ("0.22", "0.40", "0.30")
+    )
+    assert 0.0435 <= fees <= 0.045  # exact 4.352c at $0.0001 rounding
+    assert e.max_edge == pytest.approx(0.08 - fees)
+    assert e.dollars == pytest.approx(10 * (0.08 - fees))
     assert e.prices == pytest.approx([0.22, 0.40, 0.30])
     assert e.secs_to_close == pytest.approx(3590)
     assert s.best_prefee["sell_range"] == pytest.approx(-0.22)

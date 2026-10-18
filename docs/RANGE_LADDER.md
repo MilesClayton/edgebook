@@ -50,7 +50,9 @@ pays the same in every outcome:
   tail, which has one ladder leg).
 
 A gap is a moment when the basket's asks plus the taker fee on every leg
-(`ceil(0.07 * C * p * (1 - p))` cents per leg, `core.fees`) cost less than the payoff.
+(`0.07 * C * p * (1 - p)` rounded up once per leg, `core.fees`) cost less than the payoff.
+This run rounded to whole cents; with direct-member $0.0001 rounding
+(`docs/KALSHI_INCENTIVES.md`) the 100-lot candle figures move by under 0.01c per contract.
 
 ## Data
 
@@ -152,5 +154,7 @@ How the book pass works:
 - Any silence of 5s or more across the whole stream counts as a recorder outage. Every
   book state set before an outage is dropped until that ticker's next message, so a
   frozen book never shows up as a long-lived gap.
-- Fees are rounded to the cent on the lot that top-of-book depth allows.
+- Fees are rounded up once per leg on the lot that top-of-book depth allows, to the precision
+  `core.fees` uses. Small lots matter here: whole-cent rounding on a 1-contract leg can add
+  up to about 1c, which direct-member rounding removes.
 - Fills ignore queue position and latency, so every gap found is still an upper bound.

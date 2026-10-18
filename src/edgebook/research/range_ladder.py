@@ -24,9 +24,9 @@ their change times (vectorised), so "the same moment" means the latest recorded 
 all three books. Recorder outages (no book message for ``OUTAGE_MS``) invalidate every
 book until its next snapshot, so a frozen book never shows up as a long-lived gap.
 
-Fees are Kalshi's general taker schedule (``core.fees``), rounded up to the cent per
-leg on the lot that top-of-book depth allows. Fills ignore queue and latency, so every
-gap here is an upper bound on what a taker could capture.
+Fees are Kalshi's general taker schedule (``core.fees``), rounded up once per leg on the
+lot that top-of-book depth allows, to the balance precision ``core.fees`` uses. Fills ignore
+queue and latency, so every gap here is an upper bound on what a taker could capture.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from edgebook.core.fees import FeeSchedule
 from edgebook.engine.maker import LongshotConfig
 from edgebook.engine.state import MarketInfo
 from edgebook.research.edge_scan import taker_fee
@@ -51,7 +52,9 @@ from edgebook.research.longshot_gaps import event_ci
 
 P = 10_000  # price units: 1/10000 of a dollar (the recorder stores 4 dp)
 OUTAGE_MS = 5_000  # no book message for this long = the recorder was down
-TAKER_COEF_X100 = 7  # 0.07, as an integer for exact cent rounding
+TAKER_COEF_X100 = 7  # 0.07, as an integer for exact rounding
+# Fee balance grid per dollar: $0.01 on the general schedule, $0.0001 for direct members.
+FEE_UNITS = round(1 / getattr(FeeSchedule(), "precision", 0.01))
 RANGE = "KXBTC"
 LADDER = "KXBTCD"
 DIRECTIONS = ("buy_range", "sell_range")
@@ -168,15 +171,15 @@ def basket_payoff(r: RangeLegs, direction: str) -> int:
 
 
 def fee_per_contract(price_units: I64, lot: I64) -> F64:
-    """Kalshi taker fee per contract: ceil(0.07 * C * p * (1 - p)) to the cent, / C.
+    """Kalshi taker fee per contract: 0.07 * C * p * (1 - p) rounded up to the fee grid, / C.
 
-    Integer arithmetic so the cent rounding is exact; equals ``core.fees.trade_fee``.
+    Integer arithmetic so the rounding is exact; equals ``core.fees.trade_fee``.
     """
     p = price_units.astype(np.int64)
     c = np.maximum(lot.astype(np.int64), 1)
-    num = TAKER_COEF_X100 * c * p * (P - p)  # cents * P**2
-    cents = -(-num // (P * P))
-    out: F64 = cents / 100.0 / c
+    num = TAKER_COEF_X100 * (FEE_UNITS // 100) * c * p * (P - p)  # fee units * P**2
+    units = -(-num // (P * P))
+    out: F64 = units / FEE_UNITS / c
     return out
 
 
