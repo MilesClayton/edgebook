@@ -1,5 +1,7 @@
 # Confirmed Kalshi execution
 
+See [the validation record](EXECUTION_VALIDATION.md) for checks, fixes and what has been verified in production.
+
 The Python recorder now has a real order adapter and a durable execution ledger. The Chrome extension asks Vercel for a Jev decision, displays an unsubmitted proposal, and submits only after the user confirms its exact terms. Everything ships disabled. This implementation has not been connected to a funded account or exercised against the real broker or model service.
 
 ## Components
