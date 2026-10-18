@@ -455,3 +455,20 @@ async def test_skip_outcome_is_logged_without_a_trade(harness: Harness) -> None:
         outcome = db.execute("SELECT body FROM audit WHERE kind='market_outcome'").fetchone()
     assert outcome is not None
     assert TICKER in outcome[0]
+
+
+async def test_status_decides_account_freshness_for_the_panel(harness: Harness) -> None:
+    """The extension panel runs on the viewer's clock, so it cannot judge this host's
+    account timestamp; status carries the verdict and the bound it used."""
+    fresh = await harness.service.status()
+    assert fresh["account_fresh"] is True
+    assert fresh["account_age_ms"] == 0
+    assert fresh["account_max_age_ms"] == harness.settings.account_max_age_ms
+
+    # A refresh that cannot reach the broker leaves the last account read in place; once it
+    # ages past the bound the panel must stop treating it as ready to trade.
+    harness.broker.failure = "account"
+    harness.clock[0] += harness.settings.account_max_age_ms + 1
+    stale = await harness.service.status()
+    assert stale["account_fresh"] is False
+    assert stale["account_age_ms"] > harness.settings.account_max_age_ms
