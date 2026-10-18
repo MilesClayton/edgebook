@@ -3,6 +3,8 @@ pilot); GET failures are retryable, POSTs are never retried."""
 
 from __future__ import annotations
 
+import asyncio
+import random
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -27,6 +29,17 @@ URLS = {
     "demo": "https://external-api.demo.kalshi.co/trade-api/v2",
     "production": "https://external-api.kalshi.com/trade-api/v2",
 }
+MAX_GET_ATTEMPTS = 3
+RETRY_BASE_S = 0.15
+RETRY_CAP_S = 0.6
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# Reads have to land inside the service's account freshness budget
+# (``account_max_age_ms``, 5 s by default), so a hung request is abandoned early and retried
+# instead of spending the whole budget waiting on one socket.
+TIMEOUT = httpx.Timeout(connect=3.0, read=4.0, write=4.0, pool=2.0)
+# Status is polled every second; the default 5 s keepalive expiry would re-handshake TLS
+# mid-cycle, which costs budget and is where connection failures cluster.
+LIMITS = httpx.Limits(max_keepalive_connections=8, max_connections=16, keepalive_expiry=90.0)
 
 
 class BrokerRejectedError(GuardError):
@@ -63,7 +76,9 @@ class KalshiBroker:
         # Kalshi runs several matching engines ("shards"); crypto markets (all BTC) are on 2.
         # Every order, position, fill and the balance are scoped to this one shard.
         self.exchange_index = exchange_index
-        self.client = client or httpx.AsyncClient(timeout=5.0, follow_redirects=False)
+        self.client = client or httpx.AsyncClient(
+            timeout=TIMEOUT, limits=LIMITS, follow_redirects=False
+        )
         self.read_bucket = TokenBucket(200)
         self.write_bucket = TokenBucket(50)
 
@@ -71,16 +86,30 @@ class KalshiBroker:
         await self.client.aclose()
 
     async def get(self, path: str, params: dict[str, str | int] | None = None) -> dict[str, Any]:
-        await self.read_bucket.acquire()
+        """Transport failures, 429s and 5xx retry with jittered backoff; the last attempt
+        raises so the caller still classifies the failure. The signature is timestamp-bound,
+        so every attempt re-signs."""
         url = self.base + path
-        response = await self.client.get(
-            url, params=params, headers=self.signer.headers("GET", url)
-        )
-        response.raise_for_status()
-        body = response.json()
-        if not isinstance(body, dict):
-            raise GuardError("invalid broker response")
-        return body
+        attempt = 0
+        while True:
+            await self.read_bucket.acquire()
+            try:
+                response = await self.client.get(
+                    url, params=params, headers=self.signer.headers("GET", url)
+                )
+            except httpx.TransportError:
+                if attempt + 1 >= MAX_GET_ATTEMPTS:
+                    raise
+            else:
+                if response.status_code not in RETRY_STATUSES or attempt + 1 >= MAX_GET_ATTEMPTS:
+                    response.raise_for_status()
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        raise GuardError("invalid broker response")
+                    return body
+            backoff = min(RETRY_BASE_S * 2**attempt, RETRY_CAP_S)
+            attempt += 1
+            await asyncio.sleep(backoff * (0.5 + random.random()))  # noqa: S311
 
     async def pages(
         self, path: str, field: str, params: dict[str, str | int] | None = None
@@ -105,18 +134,25 @@ class KalshiBroker:
 
     async def account(self) -> dict[str, Any]:
         started = self.clock()
-        as_of = timestamp((await self.get("/exchange/user_data_timestamp"))["as_of_time"])
-        status = await self.get("/exchange/status")
-        if status["trading_active"] is not True or status["exchange_active"] is not True:
-            raise GuardError("exchange is paused")
         params: dict[str, str | int] = {
             "subaccount": self.subaccount,
             "exchange_index": self.exchange_index,
         }
-        balance = await self.get("/portfolio/balance", params)  # cash on this shard only
-        rows = await self.pages("/portfolio/positions", "market_positions", params)
-        # resting orders are returned, not refused: the ledger accepts only the ones it placed
-        resting = await self.pages("/portfolio/orders", "orders", {**params, "status": "resting"})
+        # ``as_of_ms`` is pinned to ``started``, so sequential round trips spend the caller's
+        # freshness budget before it can check it. These five reads are independent; issuing
+        # them together costs one round trip instead of five. gather (not TaskGroup) keeps the
+        # original exception type, which the service needs to tell transient from terminal.
+        stamp, status, balance, rows, resting = await asyncio.gather(
+            self.get("/exchange/user_data_timestamp"),
+            self.get("/exchange/status"),
+            self.get("/portfolio/balance", params),  # cash on this shard only
+            self.pages("/portfolio/positions", "market_positions", params),
+            # resting orders are returned, not refused: the ledger accepts only the ones it placed
+            self.pages("/portfolio/orders", "orders", {**params, "status": "resting"}),
+        )
+        as_of = timestamp(stamp["as_of_time"])
+        if status["trading_active"] is not True or status["exchange_active"] is not True:
+            raise GuardError("exchange is paused")
         amount = balance["balance"]
         if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
             raise GuardError("invalid broker balance")
