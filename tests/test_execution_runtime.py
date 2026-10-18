@@ -84,3 +84,38 @@ async def test_build_disabled_config_recovery_and_source(
     finally:
         await broker.close()
         owner.close()
+
+
+async def test_gateway_retries_only_temporary_inference_failures() -> None:
+    import httpx
+
+    from edgebook.execution.runtime import gateway_decision
+
+    calls = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return (
+            httpx.Response(502, json={})
+            if len(calls) == 1
+            else httpx.Response(200, json={"action": "skip"})
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await gateway_decision(
+            client,
+            "https://gateway.test/api/jev-decide",
+            "fixture-token",
+            {"allowed_actions": ["skip"]},
+        )
+    assert result == {"action": "skip"}
+    assert len(calls) == 2
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(401, text="private upstream detail"))
+    ) as client:
+        with pytest.raises(GuardError, match="authentication failed") as error:
+            await gateway_decision(
+                client, "https://gateway.test/api/jev-decide", "fixture-token", {}
+            )
+    assert "private upstream detail" not in str(error.value)

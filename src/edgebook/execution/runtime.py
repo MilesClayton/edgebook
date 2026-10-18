@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import fcntl
 import hashlib
 import os
 import socket
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import IO, Any
 
@@ -22,6 +24,58 @@ from edgebook.execution.proof import paper_proof
 from edgebook.execution.service import ExecutionService
 from edgebook.execution.sqlite_ledger import SQLiteLedger
 from edgebook.venues.kalshi.auth import KalshiSigner
+
+
+async def gateway_decision(
+    client: httpx.AsyncClient, url: str, token: str, context: dict[str, Any]
+) -> dict[str, Any]:
+    """Retry inference once on a temporary failure; this endpoint cannot send orders."""
+    for attempt in range(2):
+        try:
+            response = await client.post(
+                url, json={"context": context}, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.TransportError:
+            if attempt == 0:
+                await asyncio.sleep(0.25)
+                continue
+            raise GuardError("Jev connection timed out; will retry next check") from None
+        if response.status_code in {429, 500, 502, 503, 504} and attempt == 0:
+            await asyncio.sleep(0.25)
+            continue
+        if response.is_error:
+            explanations = {
+                401: "Jev connection authentication failed; check the server proposal token",
+                403: "Jev endpoint access was denied",
+                402: "Jev gateway credits are exhausted",
+                404: "Jev endpoint or model was not found",
+                429: "Jev is rate limited; will retry next check",
+            }
+            message = explanations.get(
+                response.status_code, "Jev provider is unavailable; will retry next check"
+            )
+            # Only our endpoint's structured, credential-free failure description
+            # is used. Never display raw provider responses or request bodies.
+            if response.status_code == 502:
+                with suppress(ValueError):
+                    body = response.json()
+                    if isinstance(body, dict) and body.get("code") in {
+                        "jev_auth",
+                        "jev_credits",
+                        "jev_rate_limit",
+                        "jev_timeout",
+                        "jev_invalid_answer",
+                    }:
+                        message = str(body.get("error") or message)
+            raise GuardError(f"{message} (HTTP {response.status_code})")
+        try:
+            body = response.json()
+        except ValueError:
+            raise GuardError("Jev returned an invalid answer; no order authorized") from None
+        if not isinstance(body, dict):
+            raise GuardError("Jev returned an invalid answer; no order authorized")
+        return body
+    raise GuardError("Jev unavailable; no order authorized")
 
 
 def claim_owner(directory: Path, settings: LiveSettings) -> IO[str]:
@@ -124,13 +178,9 @@ def build_service(
 
             async def decide(context: dict[str, Any]) -> dict[str, Any]:
                 """Ask Jev (on Vercel, via AI Gateway) for a bounded decision."""
-                response = await jev_client.post(
-                    settings.jev_decide_url,
-                    json={"context": context},
-                    headers={"Authorization": f"Bearer {settings.proposal_token}"},
+                return await gateway_decision(
+                    jev_client, settings.jev_decide_url, settings.proposal_token, context
                 )
-                response.raise_for_status()
-                return dict(response.json())
 
         seller = next(
             (

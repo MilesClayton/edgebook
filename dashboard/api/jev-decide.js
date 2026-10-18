@@ -25,6 +25,15 @@ export default async function handler(req, res, decide = jevDecision) {
   try {
     return res.status(200).json(await decide(context));
   } catch (error) {
-    return res.status(502).json({ error: error.message });
+    const status = error.statusCode ?? error.cause?.statusCode;
+    const name = String(error.name || "");
+    let code = "jev_unavailable", message = "Jev provider is unavailable; will retry next check";
+    if (status === 401 || status === 403) { code = "jev_auth"; message = "Jev gateway authentication failed; check the gateway API key"; }
+    else if (status === 402) { code = "jev_credits"; message = "Jev gateway credits are exhausted"; }
+    else if (status === 429) { code = "jev_rate_limit"; message = "Jev is rate limited; will retry next check"; }
+    else if (/Timeout|Abort/.test(name)) { code = "jev_timeout"; message = "Jev took too long; will retry next check"; }
+    else if (/InvalidResponse|TypeValidation/.test(name)) { code = "jev_invalid_answer"; message = "Jev returned an incomplete decision; will retry next check"; }
+    console.error("Jev decision failed", { code, upstream_status: status ?? null, error_type: name });
+    return res.status(502).json({ error: message, code });
   }
 }
