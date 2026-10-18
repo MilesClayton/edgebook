@@ -98,7 +98,8 @@ test("popup remembers the password, auto-connects, resumes and buys in one click
     let result;
     if (url.endsWith("action=status")) result = {
       configured: true, enabled: true, paused, environment: "production",
-      account_updated_ms: Date.now(), remaining_purchase_budget: "5.0", open_exposure: "0",
+      account_updated_ms: Date.now(), account_fresh: true, account_age_ms: 0,
+      account_max_age_ms: 5000, remaining_purchase_budget: "5.0", open_exposure: "0",
       realized_loss: "0", positions: [], orders: [],
       limits: { purchase_spend_cents: 500, open_exposure_cents: 300, realized_loss_cents: 300, order_debit_cents: 100 },
     };
@@ -307,4 +308,44 @@ test("budget save stops first, Start is explicit, and Stop works during a stalle
   await starting;
   assert.equal(state.paused, true);
   assert.equal(sent.filter((s) => s.url.endsWith("action=pause")).length, 1);
+});
+
+test("popup trusts the server's account freshness instead of the local clock", async () => {
+  // The viewer's clock can be skewed from the host's, so subtracting the host's account
+  // timestamp from Date.now() made a healthy broker connection look dropped. The server
+  // sends the verdict; an absent one keeps the order buttons closed rather than guessing.
+  const statusBody = {
+    configured: true, enabled: true, paused: false, environment: "production",
+    account_updated_ms: Date.now(), remaining_purchase_budget: "5.0", open_exposure: "0",
+    realized_loss: "0", positions: [], orders: [],
+    limits: { purchase_spend_cents: 500, open_exposure_cents: 300, realized_loss_cents: 300, order_debit_cents: 100 },
+  };
+  const live = { data: { updated_ms: Date.now(), calls: [
+    { ticker: "KXBTC15M-26OCT171945-45", series: "KXBTC15M", seconds_left: 300 },
+  ] } };
+
+  for (const [verdict, disabled] of [[{ account_fresh: true }, false],
+                                     [{ account_fresh: false }, true],
+                                     [{}, true]]) {
+    const fetch = async (url) => {
+      const result = url.endsWith("action=status") ? { ...statusBody, ...verdict } : live;
+      return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+    };
+    const storage = { local: { base: "https://fixture-dashboard.test", passcode: "pw" }, session: {} };
+    const popup = popupHarness(storage, fetch);
+    await popup.open();
+    assert.equal(popup.element("review").disabled, disabled,
+      `account_fresh ${JSON.stringify(verdict)} should leave review disabled=${disabled}`);
+  }
+
+  // A local clock hours behind the host no longer matters: the verdict still decides.
+  const skewed = async (url) => {
+    const result = url.endsWith("action=status")
+      ? { ...statusBody, account_fresh: true, account_updated_ms: Date.now() + 3_600_000 }
+      : live;
+    return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  };
+  const popup = popupHarness({ local: { base: "https://fixture-dashboard.test", passcode: "pw" }, session: {} }, skewed);
+  await popup.open();
+  assert.equal(popup.element("review").disabled, false);
 });

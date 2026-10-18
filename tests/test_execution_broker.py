@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from edgebook.execution import broker
 from edgebook.execution.broker import BrokerRejectedError, KalshiBroker, fixed, timestamp
 from edgebook.execution.live_ledger import CENT, DOLLAR, GuardError
 from edgebook.venues.kalshi.auth import KalshiSigner
@@ -411,3 +413,126 @@ async def test_markets_on_another_shard_are_refused(signer: KalshiSigner) -> Non
     with pytest.raises(GuardError, match="identity mismatch"):
         await broker.market(TICKER)
     await broker.close()
+
+
+async def test_transient_reads_retry_then_succeed(
+    signer: KalshiSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blip mid-refresh used to pause execution outright; reads now absorb it."""
+    slept: list[float] = []
+
+    async def no_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("edgebook.execution.broker.asyncio.sleep", no_sleep)
+    attempts: list[str] = []
+    failures = [httpx.ConnectError("reset"), httpx.ReadTimeout("slow"), None]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.path)
+        # Every attempt must carry a freshly signed timestamp, not a replayed one.
+        assert request.headers["KALSHI-ACCESS-TIMESTAMP"]
+        failure = failures.pop(0) if failures else None
+        if failure is not None:
+            raise failure
+        return httpx.Response(200, json={"trading_active": True, "exchange_active": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    sut = KalshiBroker(signer, "demo", 2, client=client, clock=lambda: NOW)
+    assert (await sut.get("/exchange/status"))["trading_active"] is True
+    assert len(attempts) == 3
+    assert len(slept) == 2
+    assert all(0 < delay <= broker.RETRY_CAP_S * 1.5 for delay in slept)
+    await sut.close()
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (static_reply({}, 503), httpx.HTTPStatusError),
+        (static_reply({}, 429), httpx.HTTPStatusError),
+    ],
+)
+async def test_exhausted_read_retries_raise_a_classifiable_error(
+    signer: KalshiSigner,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: Callable[[httpx.Request], httpx.Response],
+    expected: type[Exception],
+) -> None:
+    """The service classifies 429/5xx and transport errors as temporary; exhausting the
+    retries must not swap that for an opaque failure."""
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("edgebook.execution.broker.asyncio.sleep", no_sleep)
+    sut = broker_for(signer, reply)
+    with pytest.raises(expected):
+        await sut.get("/exchange/status")
+    await sut.close()
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+async def test_rejections_are_not_retried(
+    signer: KalshiSigner, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    async def no_sleep(_: float) -> None:
+        raise AssertionError(f"{code} must not back off and retry")
+
+    monkeypatch.setattr("edgebook.execution.broker.asyncio.sleep", no_sleep)
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(code, json={})
+
+    sut = broker_for(signer, handle)
+    with pytest.raises(httpx.HTTPStatusError):
+        await sut.get("/exchange/status")
+    assert len(seen) == 1
+    await sut.close()
+
+
+async def test_order_submission_is_never_retried(
+    signer: KalshiSigner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retried POST could double-fill. 503 on submit raises after exactly one dispatch."""
+
+    async def no_sleep(_: float) -> None:
+        raise AssertionError("submission must not back off and retry")
+
+    monkeypatch.setattr("edgebook.execution.broker.asyncio.sleep", no_sleep)
+    posts: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        return httpx.Response(503, json={})
+
+    sut = broker_for(signer, handle)
+    with pytest.raises(httpx.HTTPStatusError):
+        await sut.submit(intent(), "fixture-client")
+    assert len(posts) == 1
+    await sut.close()
+
+
+async def test_account_reads_are_issued_concurrently(signer: KalshiSigner) -> None:
+    """Five sequential round trips used to spend the caller's freshness budget before
+    ``refresh`` could check it."""
+    routes = fixture_routes()
+    inflight = 0
+    peak = 0
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0)
+        inflight -= 1
+        return httpx.Response(200, json=routes[request.url.path.removeprefix("/trade-api/v2")])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    sut = KalshiBroker(signer, "demo", 2, client=client, clock=lambda: NOW)
+    account = await sut.account()
+    assert account["positions"] == {TICKER: 37}
+    assert peak == 5, f"account reads ran {peak} at a time"
+    await sut.close()

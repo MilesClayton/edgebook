@@ -9,7 +9,7 @@ import pytest
 
 from edgebook.core.types import LiquidityRole
 from edgebook.engine.decide import Call, EngineConfig, evaluate, fee, fill_fee
-from edgebook.engine.loop import DEFAULT_STRATEGIES, LiveEngine
+from edgebook.engine.loop import DEFAULT_STRATEGIES, LONGSHOT_EVERY_MS, LiveEngine
 from edgebook.engine.maker import LongshotConfig, MakerBook, longshot_quote, quote_longshot
 from edgebook.engine.paper import PaperAccount
 from edgebook.engine.state import LiveState, MarketInfo
@@ -124,8 +124,8 @@ def test_engine_longshot_says_why_not(tmp_path: Path) -> None:
     stale = LiveEngine(s2, tmp_path / "q.json", clock=lambda: NOW + 9_000, strategies=[SPEC])
     [c2] = stale.tick()
     assert c2.reason.startswith("Waiting")
-    # re-quotes every 5 s; in between it only matches fills
-    stale.clock = lambda: NOW + 10_000
+    # re-quotes every LONGSHOT_EVERY_MS; in between it only matches fills
+    stale.clock = lambda: NOW + 9_000 + LONGSHOT_EVERY_MS // 2
     stale.tick()
     assert stale.runners[0].last_tick_ms == NOW + 9_000  # skipped: last quotes stand
     stale.clock = lambda: NOW + 14_000

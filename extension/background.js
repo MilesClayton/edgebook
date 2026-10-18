@@ -52,7 +52,8 @@ export async function handle(message) {
         const execution = source ? Object.fromEntries([
           "configured", "enabled", "paused", "autopilot", "longshot", "unknown_or_pending",
           "error", "reason", "remaining_purchase_budget", "open_exposure", "realized_pnl",
-          "account_updated_ms", "environment", "autopilot_last", "longshot_last",
+          "account_updated_ms", "account_age_ms", "account_fresh", "account_max_age_ms",
+          "environment", "autopilot_last", "longshot_last",
           "positions", "limits", "resting_orders",
           "auto_recovery", "recovery_checks", "pause_kind",
           "scanner",
