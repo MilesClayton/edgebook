@@ -71,13 +71,13 @@ def test_payoff_rejects_bad_inputs(price: float, win: float) -> None:
 
 def test_mix_statistics() -> None:
     mix = coinflip_taker(0.01)
-    cost = 0.5 + float(trade_fee(1, Decimal("0.5"), TAKER))
-    win = cost + 0.01
+    flip_cost = 0.5 + float(trade_fee(1, Decimal("0.5"), TAKER))
+    flip_win = flip_cost + 0.01
     assert mix.edge == pytest.approx(0.01)
-    assert mix.win_prob == pytest.approx(win)
+    assert mix.win_prob == pytest.approx(flip_win)
     assert mix.price == pytest.approx(0.5)
-    assert mix.sd == pytest.approx(math.sqrt(win * (1 - win)))
-    assert mix.gross_loss_rate == pytest.approx((1 - win) * cost)
+    assert mix.sd == pytest.approx(math.sqrt(flip_win * (1 - flip_win)))
+    assert mix.gross_loss_rate == pytest.approx((1 - flip_win) * flip_cost)
     seller = longshot_seller(0.0)
     assert 0.9 < seller.win_prob < 0.96
     assert seller.edge == pytest.approx(0.0, abs=1e-12)
