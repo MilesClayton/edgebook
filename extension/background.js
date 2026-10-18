@@ -6,6 +6,8 @@
 import { exactQuantity, proposalText, validBase } from "./view.js";
 
 const TICKER = /^(KXBTC15M|KXBTCD)-[A-Z0-9]+-[A-Z0-9.]+$/;
+let panelRequest = null;
+let panelUntil = 0;
 
 async function access() {
   const { base, passcode } = await chrome.storage.local.get(["base", "passcode"]);
@@ -32,9 +34,33 @@ async function request(path, body) {
 }
 
 export async function handle(message) {
+  if (message.type === "edgebook:open-controls") {
+    await chrome.tabs.create({ url: chrome.runtime.getURL("popup.html") });
+    return { ok: true };
+  }
   if (message.type === "edgebook:live") {
-    const { data } = await request("/api/data?kind=live");
-    return { ok: true, live: data.data };
+    // All open market panels share one read. Only presentation fields cross
+    // into content scripts; credentials and proposal tokens stay in the worker.
+    if (!panelRequest || Date.now() >= panelUntil) {
+      panelUntil = Infinity;
+      panelRequest = Promise.allSettled([
+        request("/api/data?kind=live"), request("/api/execution?action=status"),
+      ]).then(([live, status]) => {
+        panelUntil = Date.now() + 4000;
+        if (live.status === "rejected" && status.status === "rejected") throw live.reason;
+        const source = status.status === "fulfilled" ? status.value.data : null;
+        const execution = source ? Object.fromEntries([
+          "configured", "enabled", "paused", "autopilot", "longshot", "unknown_or_pending",
+          "error", "reason", "remaining_purchase_budget", "open_exposure", "realized_pnl",
+          "account_updated_ms", "environment", "autopilot_last", "longshot_last",
+          "positions", "limits", "resting_orders",
+        ].map((key) => [key, source[key]])) : null;
+        return { ok: true, live: live.status === "fulfilled" ? live.value.data.data : null,
+          execution, checked_ms: Date.now(),
+          execution_error: status.status === "rejected" ? String(status.reason.message) : null };
+      }).catch((error) => { panelRequest = null; throw error; });
+    }
+    return panelRequest;
   }
   if (message.type === "edgebook:ask-jev") {
     if (!TICKER.test(String(message.ticker))) throw new Error("Not an Edgebook BTC market ticker.");
