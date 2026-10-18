@@ -261,7 +261,7 @@ test("popup keeps refreshing and says so when a refresh fails", async () => {
   const storage = { local: { base: "https://fixture-dashboard.test", passcode: "fixture-password" }, session: {} };
   const popup = popupHarness(storage, fetch, timers);
   await popup.open();
-  const refresh = timers.find(([, ms]) => ms === 5000)[0];
+  const refresh = timers.find(([, ms]) => ms === 1000)[0];
   at = Date.now();
   await refresh();
   assert.equal(popup.element("autopilot-log").textContent.split("\n").length, 2);  // new check on top

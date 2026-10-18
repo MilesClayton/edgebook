@@ -235,6 +235,12 @@ class ExecutionService:
                 "autopilot_available": self.decide is not None and self.tickers is not None,
                 "autopilot_last": self.autopilot_last,
                 "autopilot_every_s": self.settings.autopilot_every_s,
+                "longshot_every_s": self.settings.longshot_every_s,
+                "market_coverage": {
+                    "series": list(self.settings.series),
+                    "entry_markets": len(self.tickers()) if self.tickers else 0,
+                    "managed_positions": len(self.ledger.status()["positions"]),
+                },
                 "longshot_available": self.longshot_quotes is not None,
                 "longshot_last": self.longshot_last,
                 "longshot_paper_proof": {
@@ -495,9 +501,12 @@ class ExecutionService:
 
     async def run_longshot(self) -> None:
         while True:
+            started = time.monotonic()
             with suppress(Exception):
                 await self.longshot_step()
-            await asyncio.sleep(self.settings.longshot_every_s)
+            await asyncio.sleep(
+                max(0, self.settings.longshot_every_s - (time.monotonic() - started))
+            )
 
     async def autopilot_step(self) -> list[dict[str, Any]]:
         """One autopilot pass: for each tradable market, review it, ask Jev only if the
@@ -602,9 +611,12 @@ class ExecutionService:
 
     async def run_autopilot(self) -> None:
         while True:
+            started = time.monotonic()
             with suppress(Exception):
                 await self.autopilot_step()
-            await asyncio.sleep(self.settings.autopilot_every_s)
+            await asyncio.sleep(
+                max(0, self.settings.autopilot_every_s - (time.monotonic() - started))
+            )
 
     async def run_reconciliation(self) -> None:
         while True:

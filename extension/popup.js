@@ -112,14 +112,14 @@ function renderAutopilot(data) {
     : on && data.paused
       ? "ON but paused: press Resume trading to let it trade."
       : on
-        ? "ON: Jev trades the current BTC 15-minute market within your caps, no Buy click needed."
+        ? "ON: Jev trades supported BTC 15-minute and hourly markets within your budget."
         : "Off: nothing is bought without your Buy click.";
   for (const note of data.autopilot_last || []) {
     if (!history.some((h) => h.at_ms === note.at_ms && h.ticker === note.ticker)) history.push(note);
   }
   history = history.slice(-30);
   const latest = history[history.length - 1];
-  const every = data.autopilot_every_s || 15;
+  const every = data.autopilot_every_s || 1;
   element("every-s").textContent = String(every);
   if (latest && on) {
     const ago = Math.max(0, (Date.now() - latest.at_ms) / 1000);
@@ -189,6 +189,8 @@ function render(data, quiet = false) {
   if (!budgetEdited) element("simple-budget").value = limits.capital_budget_cents ? (limits.capital_budget_cents / 100).toFixed(2) : "";
   if (!strategyEdited) element("strategy").value = data.autopilot && data.longshot ? "both" : data.longshot ? "longshot" : "autopilot";
   element("dashboard-link").href = validBase(saved.base) + "/#positions";
+  const coverage = data.market_coverage;
+  element("strategy-help").textContent = `Scan target: Jev ${data.autopilot_every_s || 1}s · long-shot ${data.longshot_every_s || 1}s. BTC 15-minute + hourly strikes${coverage ? ` · ${coverage.entry_markets} entry markets · ${coverage.managed_positions} open positions managed` : ""}. No extra tabs needed; all positions sync to the dashboard. Slow broker/model replies can extend a scan.`;
   const of = (used, cents) => cents ? `${usd(used)} of ${usd(cents / 100)}` : usd(used);
   element("spent").textContent = of(data.purchase_spend, limits.purchase_spend_cents);
   element("budget").textContent = usd(data.remaining_purchase_budget);
@@ -440,12 +442,12 @@ async function refresh() {
     render(await request("/api/execution?action=status"), true);
   } catch (error) {
     element("now-updated").textContent = "NOT UPDATING";
-    element("message").textContent = `Couldn't refresh from the server: ${error.message} (retrying every 5 s)`;
+    element("message").textContent = `Couldn't refresh from the server: ${error.message} (retrying every second)`;
   } finally {
     refreshing = false;
   }
 }
-setInterval(refresh, 5000);
+setInterval(refresh, 1000);
 
 const stored = await chrome.storage.local.get(["base", "passcode"]);
 saved = { base: stored.base || element("base").value, passcode: stored.passcode || "" };

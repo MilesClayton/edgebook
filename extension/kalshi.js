@@ -206,5 +206,5 @@
       results.clear(); quantities.clear(); refresh();
     }
   }, 1000);
-  setInterval(refresh, 4000);
+  setInterval(refresh, 1000);
 })();

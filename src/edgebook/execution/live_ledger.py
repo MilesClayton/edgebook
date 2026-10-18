@@ -113,9 +113,9 @@ class LiveSettings(BaseSettings):
     # Autopilot (off until the owner switches it on): every autopilot_every_s seconds it
     # reviews the open markets of these series, asks Jev, and confirms Jev's enter/exit
     # through the same checks and caps as a manual Buy. It never adds to a held market.
-    autopilot_series: tuple[str, ...] = ("KXBTC15M",)
+    autopilot_series: tuple[str, ...] = ("KXBTC15M", "KXBTCD")
     autopilot_contracts: str = Field(default="1.00", pattern=r"^(?:0|[1-9][0-9]{0,4})\.[0-9]{2}$")
-    autopilot_every_s: int = Field(default=15, ge=5, le=3600)
+    autopilot_every_s: int = Field(default=1, ge=1, le=3600)
     jev_decide_url: str = ""  # https://<dashboard>/api/jev-decide (server-to-server)
     # Long-shot pilot (off until the owner switches it on): mirrors the paper "longshot"
     # strategy with real post-only resting orders of longshot_contracts each, never adding to a
@@ -123,7 +123,7 @@ class LiveSettings(BaseSettings):
     # rests; orders also expire at Kalshi longshot_expire_s before close if this host dies.
     longshot_strategy: str = "longshot"
     longshot_contracts: str = Field(default="1.00", pattern=r"^(?:0|[1-9][0-9]{0,4})\.[0-9]{2}$")
-    longshot_every_s: int = Field(default=5, ge=2, le=600)
+    longshot_every_s: int = Field(default=1, ge=1, le=600)
     longshot_max_orders: int = Field(default=5, ge=1, le=100)
     longshot_event_cents: int = Field(default=500, gt=0, le=100_000_000)  # per hourly close
     longshot_expire_s: int = Field(default=300, ge=60, le=3600)

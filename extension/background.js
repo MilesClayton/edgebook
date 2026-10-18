@@ -46,7 +46,7 @@ export async function handle(message) {
       panelRequest = Promise.allSettled([
         request("/api/data?kind=live"), request("/api/execution?action=status"),
       ]).then(([live, status]) => {
-        panelUntil = Date.now() + 4000;
+        panelUntil = Date.now() + 1000;
         if (live.status === "rejected" && status.status === "rejected") throw live.reason;
         const source = status.status === "fulfilled" ? status.value.data : null;
         const execution = source ? Object.fromEntries([
