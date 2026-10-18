@@ -5,8 +5,8 @@
 // Every number carries a plain-English hover description (title attribute).
 "use strict";
 
-const PAGES = { live: "Live Calls", paper: "Paper $500k", research: "Research", calibration: "Calibration", system: "System" };
-const REFRESH_MS = { live: 3000, paper: 5000, system: 5000 };
+const PAGES = { live: "Live Calls", positions: "Real positions", paper: "Paper $500k", research: "Research", calibration: "Calibration", system: "System" };
+const REFRESH_MS = { live: 3000, positions: 5000, paper: 5000, system: 5000 };
 let page = PAGES[location.hash.slice(1)] ? location.hash.slice(1) : "live";
 let timer = null;
 
@@ -282,14 +282,16 @@ function engineReadiness(d, execution) {
   const percent = needed ? Math.min(100, (collected / needed) * 100) : 100;
   const waiting = remaining > 0;
   const execPaused = execution?.paused === true;
-  const execUnknown = !execution || execution.unknown_or_pending;
+  const execUnknown = !execution || !execution.configured || !execution.enabled || execution.unknown_or_pending;
   const mode = execUnknown ? "CHECKING" : execPaused ? "PAUSED" : "ACTIVE";
   const modeTone = execUnknown || execPaused ? "warn" : "good";
   const detail = execUnknown
     ? "Execution status is loading. No order can be submitted until it is confirmed."
     : execPaused
       ? "Live execution is paused. The engine can watch markets but cannot send an order."
-      : "Live execution is active. A market still needs to pass every data check, then each order requires a separate Buy confirmation.";
+      : execution.autopilot || execution.longshot
+        ? "Automatic trading is enabled within your saved limits. Open Real positions for broker fills and positions."
+        : "Manual execution is active. Each order requires your Buy confirmation in the popup.";
   const readiness = waiting
     ? `Collecting settlement-index history · ${fmt.left(collected)} of ${fmt.left(needed)} · about ${fmt.left(remaining)} left`
     : "Market data is ready for a decision. The engine will still wait whenever a price, liquidity, or safety check fails.";
@@ -610,7 +612,44 @@ async function system(root) {
   ], ex) : empty("Exchange feeds not connected yet."));
 }
 
-const RENDER = { live, paper, research, calibration, system };
+async function positions(root) {
+  let d;
+  try {
+    const response = await fetch("/api/execution?action=status", { cache: "no-store" });
+    if (!response.ok) throw new Error("Execution status is unavailable");
+    d = await response.json();
+  } catch {
+    root.append(empty("Unable to refresh real positions. Reconnect before relying on account values."));
+    return;
+  }
+  if (!d.configured) return root.append(empty("Live execution is not configured."));
+  root.append(el("div", { class: "banner" },
+    `${d.environment === "production" ? "Real money" : "Demo"} · ${d.paused ? "Stopped" : d.autopilot || d.longshot ? "Automatic trading" : "Manual trading"}${d.error ? ` · ${d.error}` : ""}. Values below are from the execution ledger reconciled with Kalshi, separate from paper accounts.`));
+  root.append(el("div", { class: "cards" },
+    card("Available cash", fmt.usd(d.available_balance), "on execution account", "Reported available broker balance."),
+    card("Open capital at risk", fmt.usd(d.open_exposure), `${d.resting_orders || 0} resting orders`, "Position cost plus unfilled order reservations, including reserved fees."),
+    card("Realized P&L", fmt.usd(d.realized_pnl), "after fees", "Filled exits and settlement results."),
+    card("Budget room", fmt.usd(d.remaining_purchase_budget), d.limits?.capital_budget_cents ? `Capital allowance ${fmt.usd(d.limits.capital_budget_cents / 100)}` : "Cumulative purchase allowance", "Capital mode counts open exposure and gross realized losses; closing positions releases room."),
+  ));
+  root.append(el("h2", {}, "Open real positions · all supported markets"));
+  root.append(d.positions?.length ? table([
+    { label: "Market", get: (p) => marketName(p.ticker) },
+    { label: "Side", get: (p) => p.side === "yes" ? "UP" : "DOWN" },
+    { label: "Contracts", get: (p) => (p.units / 100).toFixed(2) },
+    { label: "Cost incl. fees", get: (p) => fmt.usd(p.cost / 1e8) },
+  ], d.positions) : empty("No open routed positions."));
+  root.append(el("h2", {}, "Real order activity"));
+  root.append(d.orders?.length ? table([
+    { label: "Market", get: (o) => marketName(o.intent?.ticker) },
+    { label: "Action", get: (o) => `${o.intent?.action} ${o.intent?.side}` },
+    { label: "Status", get: (o) => o.status },
+    { label: "Filled", get: (o) => o.filled_quantity },
+    { label: "Cost", get: (o) => fmt.usd(o.fill_cost) },
+    { label: "Fees", get: (o) => fmt.usd(o.fees) },
+  ], [...d.orders].reverse().slice(0, 50)) : empty("No routed orders yet."));
+}
+
+const RENDER = { live, positions, paper, research, calibration, system };
 
 let render = async function () {
   const root = document.getElementById("content");

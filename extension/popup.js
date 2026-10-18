@@ -12,6 +12,17 @@ let status = null;
 let saved = { base: "", passcode: "" };
 let tickerTyped = false; // you typed a ticker yourself: don't overwrite it
 let amountMode = "contracts";
+let budgetEdited = false;
+let strategyEdited = false;
+let stopping = false;
+
+for (const name of ["live", "help"]) element(`tab-${name}`).addEventListener("click", () => {
+  for (const tab of ["live", "help"]) {
+    element(`page-${tab}`).hidden = tab !== name;
+    element(`tab-${tab}`).className = tab === name ? "active" : "";
+    element(`tab-${tab}`).setAttribute?.("aria-pressed", String(tab === name));
+  }
+});
 
 async function request(path, body) {
   const base = validBase(saved.base);
@@ -33,7 +44,8 @@ async function request(path, body) {
 }
 
 function controls() {
-  for (const id of ["connect", "pause", "reconcile", "resume", "forget"]) element(id).disabled = busy;
+  for (const id of ["connect", "reconcile", "resume", "forget"]) element(id).disabled = busy || stopping;
+  element("pause").disabled = stopping || !saved.passcode;
   element("review").disabled = busy || !ready;
   element("confirm").disabled = busy || !ready || !proposal || Date.now() >= proposal.expires_ms;
   element("resume").disabled = busy || !status?.configured || !status?.enabled || !status?.paused;
@@ -44,6 +56,9 @@ function controls() {
     || !status?.longshot_available || Boolean(status?.longshot);
   element("longshot-off").disabled = busy || !status?.longshot;
   element("save-caps").disabled = busy || !status?.configured;
+  element("save-budget").disabled = busy || !status?.configured;
+  element("start-trading").disabled = busy || stopping || !status?.configured || !status?.enabled
+    || Boolean(status?.unknown_or_pending) || budgetEdited || !status?.limits?.capital_budget_cents;
   element("setup").hidden = Boolean(saved.passcode);
   element("forget").hidden = !saved.passcode;
 }
@@ -165,10 +180,15 @@ function render(data, quiet = false) {
     && Date.now() - data.account_updated_ms <= 5000;
   element("mode").textContent = data.environment ? data.environment.toUpperCase() : "SETUP";
   element("account").hidden = !data.configured;
-  element("state").textContent = data.paused ? "PAUSED" : data.autopilot ? "AUTOPILOT ON" : "MANUAL";
+  element("state").textContent = data.paused ? "STOPPED" : data.autopilot || data.longshot ? "RUNNING" : "MANUAL";
   element("state").className = `pill${data.paused ? " paused" : data.autopilot ? " on" : ""}`;
   element("now-updated").textContent = `updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
   const limits = data.limits || {};
+  element("cash").textContent = usd(data.available_balance);
+  element("pnl").textContent = usd(data.realized_pnl);
+  if (!budgetEdited) element("simple-budget").value = limits.capital_budget_cents ? (limits.capital_budget_cents / 100).toFixed(2) : "";
+  if (!strategyEdited) element("strategy").value = data.autopilot && data.longshot ? "both" : data.longshot ? "longshot" : "autopilot";
+  element("dashboard-link").href = validBase(saved.base) + "/#positions";
   const of = (used, cents) => cents ? `${usd(used)} of ${usd(cents / 100)}` : usd(used);
   element("spent").textContent = of(data.purchase_spend, limits.purchase_spend_cents);
   element("budget").textContent = usd(data.remaining_purchase_budget);
@@ -183,6 +203,11 @@ function render(data, quiet = false) {
   element("scope").textContent = data.scope || "";
   renderAutopilot(data);
   renderLongshot(data);
+  if (data.paused) element("autopilot-state").textContent = "Trading stopped";
+  else if (data.longshot && !data.autopilot) element("autopilot-state").textContent = "Long-shot bids are running";
+  else if (data.autopilot) element("autopilot-state").textContent = "Jev is watching your markets";
+  else element("autopilot-state").textContent = "Ready when you are";
+  if (data.error) element("now-outcome").textContent = plainOutcome({ outcome: `refused: ${data.error}` });
   element("positions").textContent = (data.positions || []).map((position) =>
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
   ).join("\n") || "No routed positions.";
@@ -194,6 +219,38 @@ function render(data, quiet = false) {
     : "Connected.");
   controls();
 }
+
+function budgetCents() {
+  const raw = element("simple-budget").value;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) throw new Error("Enter a budget in dollars, with up to two decimal places.");
+  const cents = Math.round(Number(raw) * 100);
+  if (cents < 1 || cents > 100000000) throw new Error("Enter a budget between $0.01 and $1,000,000.");
+  return cents;
+}
+element("simple-budget").addEventListener("input", () => { budgetEdited = true; controls(); });
+element("strategy").addEventListener("change", () => { strategyEdited = true; });
+element("save-budget").addEventListener("click", () => run(async () => {
+  const cents = budgetCents();
+  await request("/api/execution?action=budget", { confirmed: true, budget_cents: cents });
+  budgetEdited = false;
+  render(await request("/api/execution?action=status"));
+  element("message").textContent = `Budget saved: ${usd(cents / 100)}. Press Start to authorize automatic trading.`;
+}));
+element("start-trading").addEventListener("click", () => run(async () => {
+  if (budgetEdited) throw new Error("Save your new budget before starting.");
+  if (!status?.limits?.capital_budget_cents) throw new Error("Save a trading budget first.");
+  const approach = element("strategy").value;
+  if (!["autopilot", "longshot", "both"].includes(approach)) throw new Error("Choose a trading approach.");
+  await request("/api/execution?action=start", {
+    confirmed: true, strategy: approach, generation: status.generation,
+  });
+  strategyEdited = false;
+  await clearProposal();
+  render(await request("/api/execution?action=status"));
+  element("message").textContent = status.paused
+    ? "Trading is stopped. Check the status before starting again."
+    : "Automatic trading started within your saved budget.";
+}));
 
 async function clearProposal() {
   proposal = null;
@@ -288,6 +345,7 @@ for (const [id] of CAP_FIELDS) element(id).addEventListener("input", () => { cap
 
 element("save-caps").addEventListener("click", () => run(async () => {
   const limits = {};
+  if (status?.limits?.capital_budget_cents) limits.capital_budget_cents = status.limits.capital_budget_cents;
   for (const [id, key, scale] of CAP_FIELDS) {
     const value = Number(element(id).value);
     if (!Number.isFinite(value) || value <= 0 || Math.round(value) !== value) {
@@ -319,7 +377,24 @@ for (const [id, enabled] of [["longshot-on", true], ["longshot-off", false]]) {
   }));
 }
 
-for (const action of ["pause", "reconcile", "resume"]) {
+// Stop bypasses the request queue, including a slow Start/status response.
+element("pause").addEventListener("click", async () => {
+  if (stopping) return;
+  stopping = true;
+  controls();
+  element("message").textContent = "Stopping new orders and canceling resting bids…";
+  try {
+    const result = await request("/api/execution?action=pause", { confirmed: true });
+    if (status) status = { ...status, ...result };
+    await clearProposal();
+    if (status) render(status);
+    element("message").textContent = "Stopped. Filled positions remain open.";
+  } catch (error) {
+    element("message").textContent = `Stop could not be confirmed: ${error.message}. Check Kalshi before continuing.`;
+  } finally { stopping = false; controls(); }
+});
+
+for (const action of ["reconcile", "resume"]) {
   element(action).addEventListener("click", () => run(async () => {
     await request("/api/execution?action=" + action, { confirmed: true });
     if (action !== "reconcile") await clearProposal();

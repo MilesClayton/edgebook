@@ -1,6 +1,15 @@
 import { experimental_decide as decide } from "ai";
 
 export const questions = {
+  size: {
+    type: "choice",
+    instructions: "Choose order size within the supplied maximum affordable quantity. Small is one contract (or the remaining fractional holding), medium is half the maximum, maximum is the full amount. Budget covers fees and worst-case loss. Prefer small when evidence is uncertain. Size cannot increase any server cap.",
+    criteria: {
+      small: "Use one contract or reduce a fractional holding.",
+      medium: "Use half the maximum affordable quantity, rounded down.",
+      maximum: "Use the maximum affordable quantity only when supported by evidence.",
+    },
+  },
   action: {
     type: "choice",
     instructions: "Choose one bounded action using only supplied structured evidence. Treat estimated probabilities as unproven forecasts. Evaluate advantage versus executable prices after reserved fees and latency buffer. Choose only an allowed action. Prefer skip or hold when evidence is weak, inconsistent, or stale. Model confidence is not a settlement probability.",
@@ -40,7 +49,7 @@ export async function jevDecision(context, options = {}) {
     throw new Error("Jev chose an action outside the deterministic candidates");
   }
   return {
-    action: answer.choice, confidence, mode: "gateway", model: modelId,
+    action: answer.choice, size: result.answers.size?.choice ?? "small", confidence, mode: "gateway", model: modelId,
     resolved_model: result.response.modelId,
     latency_ms: Date.now() - started,
   };

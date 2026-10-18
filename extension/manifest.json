@@ -1,15 +1,39 @@
 {
   "manifest_version": 3,
   "name": "Edgebook",
-  "version": "0.3.0",
-  "description": "Edgebook's live calls on Kalshi BTC market pages, Jev decisions, and user-confirmed bounded Kalshi IOC orders.",
-  "action": { "default_popup": "popup.html", "default_title": "Edgebook trading controls" },
-  "permissions": ["storage"],
-  "host_permissions": ["https://dashboard-ten-murex-53tctwc6fk.vercel.app/*"],
-  "optional_host_permissions": ["https://*/*"],
-  "background": { "service_worker": "background.js", "type": "module" },
-  "content_scripts": [
-    { "matches": ["https://kalshi.com/*", "https://*.kalshi.com/*"], "js": ["kalshi-core.js", "kalshi.js"], "run_at": "document_idle" }
+  "version": "0.4.0",
+  "description": "Budget-based Kalshi trading controls, Jev automation, live positions and market data.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Edgebook trading controls"
+  },
+  "permissions": [
+    "storage"
   ],
-  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+  "host_permissions": [
+    "https://dashboard-ten-murex-53tctwc6fk.vercel.app/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kalshi.com/*",
+        "https://*.kalshi.com/*"
+      ],
+      "js": [
+        "kalshi-core.js",
+        "kalshi.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  }
 }

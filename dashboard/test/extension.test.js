@@ -206,9 +206,9 @@ test("popup saves money caps and switches autopilot with explicit confirmation",
   await popup.element("autopilot-on").listeners.click();
   assert.deepEqual(sent.find((item) => item.url.endsWith("action=autopilot")).body,
     { confirmed: true, enabled: true });
-  assert.match(popup.element("autopilot-state").textContent, /^ON: Jev trades/);
+  assert.match(popup.element("autopilot-state").textContent, /Jev is watching your markets/);
   assert.match(popup.element("autopilot-log").textContent, /Jev said hold \(40% sure\)\. No order\./);
-  assert.equal(popup.element("state").textContent, "AUTOPILOT ON");
+  assert.equal(popup.element("state").textContent, "RUNNING");
   assert.match(popup.element("now-market").textContent, /^KXBTC15M-FIXTURE · closes in 7:0\d · checked/);
   assert.match(popup.element("now-engine").textContent, /UP costs 60¢ · engine says 62% · edge \+0\.4¢/);
   assert.match(popup.element("now-engine").textContent, /DOWN costs 41¢ · engine says 38% · edge −4\.0¢/);
@@ -218,7 +218,7 @@ test("popup saves money caps and switches autopilot with explicit confirmation",
   assert.equal(popup.element("bar-loss").max, 15);
   assert.equal(popup.element("autopilot-off").disabled, false);
   await popup.element("autopilot-off").listeners.click();
-  assert.match(popup.element("autopilot-state").textContent, /^Off/);
+  assert.match(popup.element("autopilot-state").textContent, /Ready when you are/);
 });
 
 test("autopilot outcomes read as plain sentences", () => {
@@ -268,4 +268,39 @@ test("popup keeps refreshing and says so when a refresh fails", async () => {
   fail = false;
   await refresh();
   assert.match(popup.element("now-updated").textContent, /^updated /);
+});
+
+test("budget save stops first, Start is explicit, and Stop works during a stalled Start", async () => {
+  const sent = [];
+  let releaseStart;
+  let state = { configured: true, enabled: true, paused: true, generation: 1,
+    autopilot: false, autopilot_available: true, longshot_available: true,
+    account_updated_ms: Date.now(), limits: { capital_budget_cents: 2000,
+      purchase_spend_cents: 2000, open_exposure_cents: 2000, realized_loss_cents: 2000,
+      order_debit_cents: 2000, max_contracts: 10000 }, positions: [], orders: [] };
+  const fetch = async (url, options) => {
+    const body = options.body && JSON.parse(options.body);
+    sent.push({ url, body });
+    if (url.endsWith("action=start")) {
+      state = { ...state, paused: false, autopilot: true };
+      await new Promise((resolve) => { releaseStart = resolve; });
+    }
+    if (url.endsWith("action=pause")) state = { ...state, paused: true, generation: 2 };
+    return new Response(JSON.stringify(url.includes("kind=live") ? { data: { calls: [] } } : state));
+  };
+  const popup = popupHarness({ local: { base: "https://fixture-dashboard.test", passcode: "fixture" }, session: {} }, fetch);
+  await popup.open();
+  popup.element("simple-budget").value = "20.00";
+  await popup.element("save-budget").listeners.click();
+  assert.deepEqual(sent.find((s) => s.url.endsWith("action=budget")).body,
+    { confirmed: true, budget_cents: 2000 });
+  assert.equal(sent.some((s) => s.url.endsWith("action=start")), false);
+  const starting = popup.element("start-trading").listeners.click();
+  assert.equal(popup.element("pause").disabled, false);
+  await popup.element("pause").listeners.click();
+  assert.equal(state.paused, true);
+  releaseStart();
+  await starting;
+  assert.equal(state.paused, true);
+  assert.equal(sent.filter((s) => s.url.endsWith("action=pause")).length, 1);
 });

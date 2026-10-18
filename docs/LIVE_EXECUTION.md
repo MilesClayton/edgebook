@@ -4,6 +4,18 @@ See [the validation record](EXECUTION_VALIDATION.md) for checks, fixes and what 
 
 The Python recorder now has a real order adapter and a durable execution ledger. The Chrome extension asks Vercel for a Jev decision, displays an unsubmitted proposal, and submits only after the user confirms its exact terms. Everything ships disabled. This implementation has not been connected to a funded account or exercised against the real broker or model service.
 
+## Current popup controls
+
+The popup has **Live** and **Help & details** tabs. Save a dollar budget, choose Jev, long-shot, or both, then press **Start live trading**. Saving a budget pauses execution and cancels resting bids; it never activates trading. Start atomically configures the approach, reconciles, and resumes. Stop is available during other requests and blocks new authorizations while canceling resting orders. Existing fills remain open.
+
+The capital budget is reusable: open cost and fee reservations plus gross realized losses must fit the saved allowance. Closing positions releases capital; losses continue to consume the allowance. Lifetime buy spending is still recorded and is never reset. Legacy cumulative-spend caps remain available in advanced controls. Server freshness, account reconciliation, fee bounds, and sufficient executable liquidity remain mandatory.
+
+In explicit capital-budget mode Jev receives executable candidates without the legacy fixed edge/exit threshold veto. It chooses buy, hold, skip, or exit and small (one contract), medium (half), or maximum affordable size for the chosen side. Quotes and actual depth determine each side's maximum separately. This is model discretion, not evidence of profit. Legacy manual reviews retain their fixed edge rules. All submitted terms are revalidated and reserved under the latest owner limits.
+
+Jev checks supported BTC 15-minute and hourly markets and all routed holdings, including fractional fills and holdings near close. Extra browser tabs are unnecessary; execution runs on the recorder. The long-shot mode still uses its configured small post-only bid size and per-close limit. Use **Real positions** on the dashboard for reconciled holdings, resting orders, actual fills and fees, separate from the paper accounts.
+
+The paper-proof gate now uses daily blocks and a Student-t confidence interval, so correlated strikes and partial exits do not count as independent evidence. It remains separately configurable; a waiver is shown and audited. Offline passing tests do not validate real broker behavior or profit.
+
 ## Components
 
 - Existing recorder host: live engine, Kalshi credentials, authenticated execution API, reconciliation, SQLite ledger and audit trail on the existing durable volume.
@@ -53,7 +65,7 @@ Do not use multiple Fly machines, independent replicated volumes, network SQLite
 
 On restart the service pauses, clears account freshness, and converts unfinished submissions to unknown. It discovers orders by the stored client ID, checks exact intent and fill identities, and reconciles again before the user can resume. Absence from a broker list is never evidence that an uncertain order was rejected. Orders older than the broker's current read window may need operator investigation against historical records; the service retains the reservation while unresolved.
 
-Reconciliation runs every five seconds and on status/control requests. Account lag, inconsistent fills, a missing response, position drift or an unsupported response pauses execution. Pause stops new authorizations; an already authorized/in-flight IOC can still fill. No unattended order loop or enable-unattended endpoint exists.
+Reconciliation runs every five seconds and on status/control requests. Account lag, inconsistent fills, a missing response, position drift or an unsupported response pauses execution. Pause stops new authorizations; an already authorized/in-flight IOC can still fill. Autopilot and long-shot loops require explicit owner activation and remain subject to the durable ledger.
 
 Back up SQLite with its backup API or a consistent volume snapshot, including WAL state as appropriate. Restore to the same owner/account binding, reconcile while paused, then explicitly resume. The service must never fail over by silently creating an empty ledger.
 

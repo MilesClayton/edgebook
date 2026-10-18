@@ -149,7 +149,18 @@ def round_trips(fills: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[
                 e["fees"] += f["fees"]
                 e["contracts"] = n
         elif tk in open_ and f["action"] in ("SELL", "SETTLE"):
-            out.append((open_.pop(tk), f))
+            entry = open_[tk]
+            sold = min(entry["contracts"], f["contracts"])
+            fraction = sold / entry["contracts"]
+            out.append(({**entry, "contracts": sold, "fees": entry["fees"] * fraction}, f))
+            if sold >= entry["contracts"]:
+                del open_[tk]
+            else:
+                open_[tk] = {
+                    **entry,
+                    "contracts": entry["contracts"] - sold,
+                    "fees": entry["fees"] * (1 - fraction),
+                }
     return out
 
 

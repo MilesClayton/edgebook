@@ -104,3 +104,16 @@ async def test_owner_can_waive_the_gate_and_waived_entries_are_audited(harness: 
         kinds = [row[0] for row in db.execute("SELECT kind FROM audit")]
     assert kinds.count("paper_proof_waived") == 2  # at review and at confirmation
     assert "entry_blocked_unproven" not in kinds
+
+
+def test_daily_blocks_do_not_count_correlated_strikes_as_independent() -> None:
+    rows = [
+        (pnl, 1.0, T0 + day * DAY_MS + i)
+        for day, pnl in enumerate([0.10, 0.10, 0.10, 0.10, -0.05])
+        for i in range(40)
+    ]
+    proof = paper_proof(rows, 200, 5)
+    assert proof["trades"] == 200
+    assert proof["independent_blocks"] == 5
+    assert proof["ci_lo"] < 0
+    assert proof["proven"] is False

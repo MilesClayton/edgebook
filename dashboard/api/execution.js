@@ -4,7 +4,7 @@ import { backend } from "../lib/execution-backend.js";
 export default async function handler(req, res) {
   if (!await requireAccess(req, res)) return;
   const action = req.query?.action;
-  if (!["status", "confirm", "pause", "resume", "reconcile", "limits", "autopilot", "longshot"].includes(action)) {
+  if (!["status", "confirm", "pause", "resume", "reconcile", "limits", "autopilot", "longshot", "budget", "start"].includes(action)) {
     return res.status(404).json({ error: "unknown execution action" });
   }
   if (req.method !== (action === "status" ? "GET" : "POST")) {

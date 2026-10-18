@@ -59,10 +59,35 @@ def add_routes(
                 "limits",
                 "autopilot",
                 "longshot",
+                "budget",
+                "start",
             } and (request.method == "POST"):
                 if request.content_type != "application/json":
                     raise GuardError("application/json required")
                 payload = await request.json()
+                if action == "start":
+                    if (
+                        not isinstance(payload, dict)
+                        or set(payload) != {"confirmed", "strategy", "generation"}
+                        or payload["confirmed"] is not True
+                        or type(payload["generation"]) is not int
+                        or not isinstance(payload["strategy"], str)
+                    ):
+                        raise GuardError(
+                            "explicit Start confirmation and current generation required"
+                        )
+                    result = await service.start(payload["strategy"], payload["generation"])
+                    return web.json_response(result, headers=headers)
+                if action == "budget":
+                    if (
+                        not isinstance(payload, dict)
+                        or set(payload) != {"confirmed", "budget_cents"}
+                        or payload["confirmed"] is not True
+                        or type(payload["budget_cents"]) is not int
+                    ):
+                        raise GuardError("explicit confirmation and budget in whole cents required")
+                    result = await service.set_budget(payload["budget_cents"])
+                    return web.json_response(result, headers=headers)
                 if action in {"limits", "autopilot", "longshot"}:
                     key = "limits" if action == "limits" else "enabled"
                     if (

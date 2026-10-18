@@ -226,6 +226,47 @@ class ExecutionService:
             self.ledger.set_limits(limits, self.clock())
             return self.ledger.status()
 
+    async def set_budget(self, cents: int) -> dict[str, Any]:
+        """A reusable capital allowance; realized losses and open risk consume it."""
+        limits = Limits(
+            capital_budget_cents=cents,
+            purchase_spend_cents=cents,
+            open_exposure_cents=cents,
+            realized_loss_cents=cents,
+            order_debit_cents=cents,
+            max_contracts=10000,
+        )
+        async with self.lock:
+            # Saving an allowance changes strategy permissions. It must not
+            # start an already-enabled autopilot without the owner's Start.
+            self.ledger.pause(self.clock(), "budget saved; press Start to trade")
+            await self.cancel_resting("budget changed")
+            self.ledger.set_limits(limits, self.clock())
+            return self.ledger.status()
+
+    async def start(self, strategy: str, generation: int) -> dict[str, Any]:
+        """Atomically configure and start, rejecting a Start overtaken by Stop."""
+        async with self.lock:
+            state = self.ledger.status()
+            if state["generation"] != generation:
+                raise GuardError("controls changed; refresh before starting again")
+            if not state["limits"].get("capital_budget_cents"):
+                raise GuardError("save a trading budget first")
+            if strategy not in {"autopilot", "longshot", "both"}:
+                raise GuardError("unknown trading approach")
+            self.enabled()
+            if strategy != "longshot" and (self.decide is None or self.tickers is None):
+                raise GuardError("Jev is not configured on this server")
+            if strategy != "autopilot" and self.longshot_quotes is None:
+                raise GuardError("long-shot is not configured on this server")
+            self.ledger.pause(self.clock(), "preparing automatic trading")
+            await self.cancel_resting("trading approach changed")
+            await self.refresh()
+            self.ledger.set_autopilot(strategy != "longshot", self.clock())
+            self.ledger.set_autopilot(strategy != "autopilot", self.clock(), kind="longshot")
+            self.ledger.resume(self.clock(), self.settings.account_max_age_ms)
+            return self.ledger.status()
+
     async def set_autopilot(self, enabled: bool) -> dict[str, Any]:
         async with self.lock:
             if enabled:
@@ -347,6 +388,11 @@ class ExecutionService:
         self.require_proof("longshot", longshot=True)
         await self.refresh()
         quote = await self.broker.quote(ticker, q["series"])
+        if self.longshot_quotes is None or not any(
+            fresh["ticker"] == ticker and self._longshot_intent(fresh) == intent
+            for fresh in self.longshot_quotes()
+        ):
+            raise GuardError("long-shot data expired or signal changed during quote refresh")
         market = quote["market"]
         if market["status"] != "active":
             raise GuardError("market not active")
@@ -422,7 +468,15 @@ class ExecutionService:
             or self.tickers is None
         ):
             return []
-        notes = [await self._autopilot_market(ticker) for ticker in self.tickers()]
+        # Manage every routed holding, even hourly markets and markets too close
+        # to settlement for a new entry. Extra browser tabs are unnecessary.
+        managed = [p["ticker"] for p in state["positions"]]
+        notes = []
+        for ticker in dict.fromkeys([*managed, *self.tickers()]):
+            current = self.ledger.status()
+            if current["paused"] or not current["autopilot"]:
+                break
+            notes.append(await self._autopilot_market(ticker))
         if notes:
             self.autopilot_last = notes
         return notes
@@ -432,7 +486,8 @@ class ExecutionService:
         holding = self.position(ticker)
         try:
             review = await self.review(
-                ReviewRequest(ticker=ticker, quantity=self.settings.autopilot_contracts)
+                ReviewRequest(ticker=ticker, quantity=self.settings.autopilot_contracts),
+                automatic=True,
             )
             context = review["context"]
             note["engine"] = self._engine_view(context["snapshot"], context["rejections"])
@@ -517,11 +572,15 @@ class ExecutionService:
             (row for row in self.ledger.status()["positions"] if row["ticker"] == ticker), None
         )
 
-    async def context(self, request: ReviewRequest) -> dict[str, Any]:
+    async def context(
+        self, request: ReviewRequest, *, automatic: bool = False, resize: bool = False
+    ) -> dict[str, Any]:
         units = quantity(request.quantity)
-        if not 0 < units <= self.settings.max_contracts * 100:
-            raise GuardError("quantity must be positive and within server cap")
         account_state = self.ledger.status()
+        limits = Limits.model_validate(account_state["limits"])
+        discretionary = automatic and limits.capital_budget_cents is not None
+        if automatic and (not account_state["autopilot"] or account_state["paused"]):
+            raise GuardError("autopilot stopped; review again after Start")
         position = next(
             (row for row in account_state["positions"] if row["ticker"] == request.ticker), None
         )
@@ -561,12 +620,29 @@ class ExecutionService:
             or money(market.get("notional_value_dollars", "0")) != DOLLAR
         ):
             raise GuardError("only binary markets with one-dollar notional are supported")
-        if units % 100 and market.get("fractional_trading_enabled") is False:
-            raise GuardError("fractional quantity is not enabled for this market")
         left = (timestamp(market["close_time"]) - now) / 1000
         if market["status"] != "active" or not 5 < left <= self.settings.max_seconds_left:
             raise GuardError("market closed or outside model horizon")
         bids = quote["bids"]
+        if resize:
+            if position:
+                units = min(
+                    position["units"], limits.max_contracts * 100, bids[position["side"]][1]
+                )
+            elif limits.capital_budget_cents is not None:
+                room = min(
+                    money(account_state["remaining_purchase_budget"]),
+                    money(account_state["available_balance"]),
+                    limits.order_debit_cents * DOLLAR // 100,
+                )
+                units = limits.max_contracts * 100
+            else:
+                units = min(units, limits.max_contracts * 100)
+        if not 0 < units <= limits.max_contracts * 100:
+            raise GuardError("not enough budget or available contracts for this order")
+        if units % 100 and market.get("fractional_trading_enabled") is False:
+            raise GuardError("fractional quantity is not enabled for this market")
+        amount = f"{Decimal(units) / 100:.2f}"
         for name, price in [
             ("up_price", DOLLAR - bids["no"][0]),
             ("down_price", DOLLAR - bids["yes"][0]),
@@ -592,13 +668,22 @@ class ExecutionService:
                 )
             )
             price_string = f"{Decimal(dollars(price)):.4f}"
+            candidate_units = units
+            if resize and not position and limits.capital_budget_cents is not None:
+                candidate_units = min(
+                    units, (room // (price + fee_reserve(100))) * 100, (depth // 100) * 100
+                )
+            if candidate_units <= 0:
+                reasons[name] = "not enough budget or executable depth for one contract"
+                continue
+            amount = f"{Decimal(candidate_units) / 100:.2f}"
             if money(price_string) != price:
                 raise GuardError("quote exceeds supported four-decimal order precision")
             intent = Intent(
                 ticker=request.ticker,
                 action=action,
                 side=side,
-                quantity=request.quantity,
+                quantity=amount,
                 limit_price=price_string,
             )
             ranges = market.get("price_ranges")
@@ -610,20 +695,26 @@ class ExecutionService:
             ):
                 raise GuardError("price not on current market tick grid")
             probability = fair if side == "yes" else 1 - fair
-            fees_per_contract = fee_reserve(units) / DOLLAR / (units / 100)
+            fees_per_contract = fee_reserve(candidate_units) / DOLLAR / (candidate_units / 100)
             edge = probability - price / DOLLAR - fees_per_contract
             exit_advantage = price / DOLLAR - fees_per_contract - probability
-            if depth < units:
+            if depth < candidate_units:
                 reasons[name] = "insufficient executable top-level depth"
-            elif position and position["units"] < units:
+            elif position and position["units"] < candidate_units:
                 reasons[name] = "exit exceeds actual routed position"
-            elif position and exit_advantage < (
-                self.settings.exit_advantage + self.settings.latency_buffer
+            elif (
+                position
+                and not discretionary
+                and exit_advantage < (self.settings.exit_advantage + self.settings.latency_buffer)
             ):
                 reasons[name] = "selling after fees does not clear deterministic exit threshold"
             elif not position and left < self.settings.min_seconds_left:
                 reasons[name] = "too close to settlement for entry"
-            elif not position and edge < self.settings.min_edge + self.settings.latency_buffer:
+            elif (
+                not position
+                and not discretionary
+                and edge < self.settings.min_edge + self.settings.latency_buffer
+            ):
                 reasons[name] = "estimated edge does not clear fees and latency buffer"
             else:
                 candidates[name] = {
@@ -632,16 +723,17 @@ class ExecutionService:
                     "estimated_edge_after_reserved_fees": edge,
                     "exit_advantage_after_reserved_fees": exit_advantage,
                     "maximum_debit": dollars(debit(intent)),
-                    "fee_reserve": dollars(fee_reserve(units)),
+                    "fee_reserve": dollars(fee_reserve(candidate_units)),
                     "minimum_exit_proceeds": dollars(
-                        intent.price * units // 100 - fee_reserve(units)
+                        intent.price * candidate_units // 100 - fee_reserve(candidate_units)
                     )
                     if position
                     else None,
                 }
         return {
             "ticker": request.ticker,
-            "quantity": request.quantity,
+            "quantity": amount,
+            "automatic": automatic,
             "observed_ms": now,
             "snapshot": snapshot,
             "quote": quote,
@@ -658,21 +750,21 @@ class ExecutionService:
             "candidates": candidates,
             "rejections": reasons,
             "allowed_actions": [*candidates, "hold", "skip"],
-            "limits": self.settings.limits().model_dump(),
+            "limits": limits.model_dump(),
             "account": account_state,
             "probability_note": (
                 "Settlement probability comes from the engine. Jev confidence is a decision score."
             ),
         }
 
-    async def review(self, request: ReviewRequest) -> dict[str, Any]:
+    async def review(self, request: ReviewRequest, *, automatic: bool = False) -> dict[str, Any]:
         async with self.lock:
             self.ledger.audit(self.clock(), "review_requested", request.model_dump())
             self.enabled()
             if self.position(request.ticker) is None:
                 self.require_proof("review")
             await self.refresh()
-            context = await self.context(request)
+            context = await self.context(request, automatic=automatic, resize=automatic)
             review_id = self.ledger.review(context, self.clock(), self.settings.confirmation_ttl_ms)
             return {"review_id": review_id, "context": context, "submitted": False}
 
@@ -703,15 +795,31 @@ class ExecutionService:
                 }
             if decision.confidence < self.settings.min_model_confidence:
                 raise GuardError("model decision confidence below server threshold")
+            automatic = context.get("automatic", False)
+            amount = context["candidates"][decision.action]["intent"]["quantity"]
+            if automatic:
+                maximum = quantity(amount)
+                selected = (
+                    min(100, maximum)
+                    if decision.size == "small"
+                    else max(1, maximum // 2)
+                    if decision.size == "medium"
+                    else maximum
+                )
+                # Whole-contract entries; exits may reduce fractional fills.
+                if not context["position"]:
+                    selected = max(100, selected // 100 * 100)
+                amount = f"{Decimal(selected) / 100:.2f}"
             current = await self.context(
-                ReviewRequest(ticker=context["ticker"], quantity=context["quantity"])
+                ReviewRequest(ticker=context["ticker"], quantity=amount), automatic=automatic
             )
             original = context["candidates"][decision.action]
-            if current["candidates"].get(decision.action, {}).get("intent") != original["intent"]:
+            expected = {**original["intent"], "quantity": amount}
+            if current["candidates"].get(decision.action, {}).get("intent") != expected:
                 raise GuardError("market moved during model decision; request a new review")
             return self.ledger.proposal(
                 {
-                    **original,
+                    **current["candidates"][decision.action],
                     "decision": decision.model_dump(),
                     "context": context,
                     "review_id": request.review_id,
@@ -737,7 +845,8 @@ class ExecutionService:
                 self.require_proof("confirm")
             await self.refresh()
             current = await self.context(
-                ReviewRequest(ticker=request.intent.ticker, quantity=request.intent.quantity)
+                ReviewRequest(ticker=request.intent.ticker, quantity=request.intent.quantity),
+                automatic=body["context"].get("automatic", False),
             )
             action = body["decision"]["action"]
             if current["candidates"].get(action, {}).get("intent") != request.intent.model_dump():
