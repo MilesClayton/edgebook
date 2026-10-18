@@ -225,6 +225,36 @@ async def test_pilot_refuses_moved_book_late_markets_and_unproven(pilot: Pilot) 
     assert {"paper_proof_waived", "longshot_order", "longshot"} <= kinds
 
 
+async def test_new_order_not_yet_visible_does_not_pause(pilot: Pilot) -> None:
+    """Kalshi briefly 404s a just-created order; that alone must not pause trading."""
+    hidden = True
+    real_find = pilot.broker.find_order
+
+    async def lagging(client_id: str, order_id: str | None) -> dict[str, Any] | None:
+        if hidden and order_id:
+            raise GuardError("acknowledged broker order not yet visible")
+        return await real_find(client_id, order_id)
+
+    pilot.broker.find_order = lagging  # type: ignore[method-assign]
+    await pilot.start()
+    notes = await pilot.service.longshot_step()
+    assert notes[0]["outcome"] == "resting NO bid 0.6000 x 1.00"
+    status = await pilot.service.status()
+    assert status["paused"] is False
+    assert status["unknown_or_pending"] is False
+    assert status["resting_orders"] == 1
+    assert status["open_exposure"] == "0.62760000"  # reservation still held
+    hidden = False
+    assert (await pilot.service.status())["paused"] is False
+    # still missing after the grace window: a real reconciliation failure
+    hidden = True
+    pilot.harness.clock[0] += 16_000
+    pilot.broker.age = 0
+    status = await pilot.service.status()
+    assert status["paused"] is True
+    assert status["unknown_or_pending"] is True
+
+
 async def test_pilot_pauses_when_cancel_fails(pilot: Pilot) -> None:
     await pilot.start()
     await pilot.service.longshot_step()
