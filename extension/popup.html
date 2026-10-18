@@ -22,12 +22,30 @@
     <p id="scope" class="muted"></p>
     <h2>Positions</h2><div id="positions">No routed positions.</div>
     <div class="row"><button id="resume">Resume trading</button><button id="pause" class="secondary">Pause</button><button id="reconcile" class="secondary">Reconcile</button></div>
+    <h2>Autopilot</h2>
+    <p id="autopilot-state" class="muted">Off: nothing is bought without your Buy click.</p>
+    <div class="row"><button id="autopilot-on">Turn autopilot ON</button><button id="autopilot-off" class="secondary">Turn OFF</button></div>
+    <pre id="autopilot-log" hidden></pre>
+    <details id="caps-editor"><summary>Money caps (edit)</summary>
+      <label>Total purchases (USD)<input id="cap-spend" type="number" min="1" step="1"></label>
+      <label>Open exposure (USD)<input id="cap-exposure" type="number" min="1" step="1"></label>
+      <label>Total loss: stops new buys (USD)<input id="cap-loss" type="number" min="1" step="1"></label>
+      <label>Per order (USD)<input id="cap-order" type="number" min="1" step="1"></label>
+      <label>Contracts per order (max)<input id="cap-contracts" type="number" min="1" step="1"></label>
+      <button id="save-caps" class="secondary">Save caps</button>
+      <p class="muted">Raising a cap adds room; spend and losses so far are kept. Every change is logged.</p>
+    </details>
   </section>
   <section>
     <h2>Ask Jev</h2>
     <label>Market<input id="ticker" autocomplete="off" placeholder="Filled with the current BTC 15-minute market"></label>
     <p class="muted" id="ticker-hint"></p>
-    <label>Contracts<input id="quantity" type="number" min="0.01" step="0.01" value="1.00"></label>
+    <div class="entry-mode" role="group" aria-label="Order amount mode">
+      <button id="contracts-mode" class="mode active" type="button">Contracts</button>
+      <button id="dollars-mode" class="mode" type="button">Dollars</button>
+    </div>
+    <label><span id="quantity-label">Contracts</span><input id="quantity" type="number" min="0.01" step="0.01" value="1.00"></label>
+    <p class="muted" id="amount-hint">Enter the number of contracts to review.</p>
     <button id="review" disabled>Ask Jev</button>
     <p class="muted">Estimated edge uses the engine forecast, live quote, fees and a latency buffer. It is not a proven trading advantage.</p>
   </section>

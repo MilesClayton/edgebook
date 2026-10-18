@@ -10,6 +10,8 @@ import socket
 from pathlib import Path
 from typing import IO, Any
 
+import httpx
+
 from edgebook.engine.decide import Position, evaluate
 from edgebook.engine.loop import LiveEngine
 from edgebook.execution.broker import KalshiBroker
@@ -100,7 +102,43 @@ def build_service(
                 proven.account.closed, settings.proof_min_trades, settings.proof_min_days
             )
 
-        service = ExecutionService(settings, ledger, broker, source, engine.clock, proof=proof)
+        def tickers() -> list[str]:
+            """Open markets of the autopilot series with enough time left to enter."""
+            now_s = engine.clock() / 1000
+            return sorted(
+                m.ticker
+                for m in engine.state.markets.values()
+                if m.series in settings.autopilot_series
+                and m.open_ts <= now_s
+                and m.close_ts - now_s > settings.min_seconds_left
+            )
+
+        decide = None
+        if settings.jev_decide_url:
+            if not settings.jev_decide_url.startswith("https://"):
+                raise GuardError("jev_decide_url must be https")
+            jev_client = httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+
+            async def decide(context: dict[str, Any]) -> dict[str, Any]:
+                """Ask Jev (on Vercel, via AI Gateway) for a bounded decision."""
+                response = await jev_client.post(
+                    settings.jev_decide_url,
+                    json={"context": context},
+                    headers={"Authorization": f"Bearer {settings.proposal_token}"},
+                )
+                response.raise_for_status()
+                return dict(response.json())
+
+        service = ExecutionService(
+            settings,
+            ledger,
+            broker,
+            source,
+            engine.clock,
+            proof=proof,
+            decide=decide,
+            tickers=tickers if decide is not None else None,
+        )
         return service, broker, owner
     except BaseException:
         owner.close()

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from edgebook.execution.live_ledger import (
     ConfirmRequest,
     GuardError,
+    Limits,
     ProposalRequest,
     ReviewRequest,
 )
@@ -48,12 +49,34 @@ def add_routes(
         try:
             if action == "status" and request.method == "GET":
                 result = await service.status()
-            elif action in {"review", "propose", "confirm", "pause", "resume", "reconcile"} and (
-                request.method == "POST"
-            ):
+            elif action in {
+                "review",
+                "propose",
+                "confirm",
+                "pause",
+                "resume",
+                "reconcile",
+                "limits",
+                "autopilot",
+            } and (request.method == "POST"):
                 if request.content_type != "application/json":
                     raise GuardError("application/json required")
                 payload = await request.json()
+                if action in {"limits", "autopilot"}:
+                    key = "limits" if action == "limits" else "enabled"
+                    if (
+                        not isinstance(payload, dict)
+                        or set(payload) != {"confirmed", key}
+                        or payload["confirmed"] is not True
+                    ):
+                        raise GuardError("explicit control confirmation required")
+                    if action == "limits":
+                        result = await service.set_limits(Limits.model_validate(payload["limits"]))
+                    elif not isinstance(payload["enabled"], bool):
+                        raise GuardError("enabled must be true or false")
+                    else:
+                        result = await service.set_autopilot(payload["enabled"])
+                    return web.json_response(result, headers=headers)
                 if action == "review":
                     result = await service.review(ReviewRequest.model_validate(payload))
                 elif action == "propose":

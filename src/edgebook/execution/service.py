@@ -6,7 +6,7 @@ import asyncio
 import math
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from decimal import Decimal
 from typing import Any, Literal, Protocol
@@ -17,7 +17,9 @@ from edgebook.execution.live_ledger import (
     ConfirmRequest,
     GuardError,
     Intent,
+    Limits,
     LiveSettings,
+    ModelDecision,
     ProposalRequest,
     ReviewRequest,
     debit,
@@ -56,10 +58,15 @@ class ExecutionService:
         clock: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
         *,
         proof: Callable[[], dict[str, Any]],
+        decide: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+        tickers: Callable[[], list[str]] | None = None,
     ) -> None:
         self.settings, self.ledger, self.broker = settings, ledger, broker
         self.source, self.clock = source, clock
         self.proof = proof  # the paper record of the strategy whose prices execution uses
+        self.decide = decide  # Jev, for autopilot (None: autopilot unavailable)
+        self.tickers = tickers  # markets autopilot may trade right now
+        self.autopilot_last: list[dict[str, Any]] = []
         self.lock = asyncio.Lock()
 
     def require_proof(self, route: str) -> None:
@@ -166,6 +173,8 @@ class ExecutionService:
                     **self.proof(),
                 },
                 "orders": self.ledger.orders(),
+                "autopilot_available": self.decide is not None and self.tickers is not None,
+                "autopilot_last": self.autopilot_last,
                 "scope": (
                     "Caps cover orders routed here; separate manual trades are outside these caps."
                 ),
@@ -184,6 +193,96 @@ class ExecutionService:
             else:
                 raise GuardError("unknown control")
             return self.ledger.status()
+
+    async def set_limits(self, limits: Limits) -> dict[str, Any]:
+        """Owner changes the money caps (audited; spend and loss so far are kept)."""
+        async with self.lock:
+            self.ledger.set_limits(limits, self.clock())
+            return self.ledger.status()
+
+    async def set_autopilot(self, enabled: bool) -> dict[str, Any]:
+        async with self.lock:
+            if enabled:
+                self.enabled()
+                if self.decide is None or self.tickers is None:
+                    raise GuardError(
+                        "autopilot is not configured on this server (Jev decision URL)"
+                    )
+            self.ledger.set_autopilot(enabled, self.clock())
+            return self.ledger.status()
+
+    async def autopilot_step(self) -> list[dict[str, Any]]:
+        """One autopilot pass: for each tradable market, review it, ask Jev only if the
+        engine has a candidate, and confirm Jev's choice through the normal checks."""
+        state = self.ledger.status()
+        if (
+            not state.get("autopilot")
+            or state["paused"]
+            or state["unknown_or_pending"]
+            or not self.settings.enabled
+            or self.decide is None
+            or self.tickers is None
+        ):
+            return []
+        notes = [await self._autopilot_market(ticker) for ticker in self.tickers()]
+        if notes:
+            self.autopilot_last = notes
+        return notes
+
+    async def _autopilot_market(self, ticker: str) -> dict[str, Any]:
+        note: dict[str, Any] = {"ticker": ticker, "at_ms": self.clock()}
+        holding = self.position(ticker)
+        try:
+            review = await self.review(
+                ReviewRequest(ticker=ticker, quantity=self.settings.autopilot_contracts)
+            )
+            context = review["context"]
+            usable = [
+                a for a in context["candidates"] if holding is not None or a.startswith("enter")
+            ]
+            if not usable:
+                note["outcome"] = "no trade: engine sees no edge after fees"
+                return note
+            if self.decide is None:
+                raise GuardError("autopilot is not configured")
+            decision = ModelDecision.model_validate(await self.decide(context))
+            note["jev"] = {"action": decision.action, "confidence": decision.confidence}
+            proposal = await self.propose(
+                ProposalRequest(review_id=review["review_id"], decision=decision)
+            )
+            if proposal.get("status") != "confirmation_required":
+                note["outcome"] = f"Jev chose {decision.action}: no order"
+                return note
+            intent = Intent.model_validate(proposal["intent"])
+            if intent.action == "buy" and holding is not None:
+                note["outcome"] = "already holding this market: autopilot never adds"
+                return note
+            order = await self.confirm(
+                ConfirmRequest(
+                    proposal_id=proposal["proposal_id"],
+                    confirmation_token=proposal["confirmation_token"],
+                    idempotency_key=f"autopilot-{uuid.uuid4().hex}",
+                    intent=intent,
+                    confirmed=True,
+                )
+            )
+            note["outcome"] = f"order {order.get('status')}"
+            note["order"] = {
+                k: order.get(k)
+                for k in ("intent", "status", "filled_quantity", "fill_cost", "fees")
+            }
+            self.ledger.audit(self.clock(), "autopilot_order", note)
+        except GuardError as error:
+            note["outcome"] = f"refused: {error}"
+        except Exception as error:  # Jev unreachable, malformed answer, etc.: no order
+            note["outcome"] = f"error: {type(error).__name__}"
+        return note
+
+    async def run_autopilot(self) -> None:
+        while True:
+            with suppress(Exception):
+                await self.autopilot_step()
+            await asyncio.sleep(self.settings.autopilot_every_s)
 
     async def run_reconciliation(self) -> None:
         while True:

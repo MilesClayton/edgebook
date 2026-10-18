@@ -11,6 +11,7 @@ let busy = false;
 let status = null;
 let saved = { base: "", passcode: "" };
 let tickerTyped = false; // you typed a ticker yourself: don't overwrite it
+let amountMode = "contracts";
 
 async function request(path, body) {
   const base = validBase(saved.base);
@@ -36,8 +37,72 @@ function controls() {
   element("review").disabled = busy || !ready;
   element("confirm").disabled = busy || !ready || !proposal || Date.now() >= proposal.expires_ms;
   element("resume").disabled = busy || !status?.configured || !status?.enabled || !status?.paused;
+  element("autopilot-on").disabled = busy || !status?.configured || !status?.enabled
+    || !status?.autopilot_available || Boolean(status?.autopilot);
+  element("autopilot-off").disabled = busy || !status?.autopilot;
+  element("save-caps").disabled = busy || !status?.configured;
   element("setup").hidden = Boolean(saved.passcode);
   element("forget").hidden = !saved.passcode;
+}
+
+function renderAmountMode() {
+  const dollars = amountMode === "dollars";
+  element("contracts-mode").className = `mode${dollars ? "" : " active"}`;
+  element("dollars-mode").className = `mode${dollars ? " active" : ""}`;
+  element("quantity-label").textContent = dollars ? "Spend up to (USD)" : "Contracts";
+  if (dollars) {
+    // the server's per-order cap is the real limit; no client-side clamp
+    element("quantity").value = (Number(element("quantity").value) || 1).toFixed(2);
+    element("amount-hint").textContent = "Uses the worse current side price, then rounds down to whole contracts. The exact maximum debit and fee reserve appear before Buy.";
+  } else {
+    element("amount-hint").textContent = "Enter the number of contracts to review.";
+  }
+}
+
+async function quantityForReview() {
+  if (amountMode === "contracts") return exactQuantity(element("quantity").value);
+  const spend = Number(element("quantity").value);
+  if (!Number.isFinite(spend) || spend <= 0 || Math.round(spend * 100) !== spend * 100) {
+    throw new Error("Enter a positive dollar amount with at most two decimal places.");
+  }
+  const live = await request("/api/data?kind=live");
+  const call = (live.data?.calls ?? []).find((c) => c.ticker === element("ticker").value.trim());
+  const worstPrice = Math.max(Number(call?.up_price), Number(call?.down_price));
+  if (!Number.isFinite(worstPrice) || worstPrice <= 0 || worstPrice >= 1) {
+    throw new Error("A two-sided live quote is needed to convert dollars to contracts.");
+  }
+  const contracts = Math.floor(spend / (worstPrice + 0.01));
+  if (contracts < 1) throw new Error(`$${spend.toFixed(2)} is below one contract at the current quote.`);
+  return exactQuantity(String(contracts));
+}
+
+const CAP_FIELDS = [
+  ["cap-spend", "purchase_spend_cents", 100],
+  ["cap-exposure", "open_exposure_cents", 100],
+  ["cap-loss", "realized_loss_cents", 100],
+  ["cap-order", "order_debit_cents", 100],
+  ["cap-contracts", "max_contracts", 1],
+];
+let capsEdited = false;
+
+function renderAutopilot(data) {
+  const on = Boolean(data.autopilot);
+  element("autopilot-state").textContent = !data.autopilot_available
+    ? "Not available: the server has no Jev decision URL configured."
+    : on && data.paused
+      ? "ON but paused: Resume to let it trade."
+      : on
+        ? "ON: Jev trades the current BTC 15-minute market within your caps, no Buy click needed."
+        : "Off: nothing is bought without your Buy click.";
+  const log = (data.autopilot_last || []).map((n) =>
+    `${new Date(n.at_ms).toLocaleTimeString()} ${n.ticker}: ${n.jev ? `Jev ${n.jev.action} (${Math.round(n.jev.confidence * 100)}%) · ` : ""}${n.outcome}`);
+  element("autopilot-log").hidden = !log.length;
+  element("autopilot-log").textContent = log.join("\n");
+  if (data.limits && !capsEdited) {
+    for (const [id, key, scale] of CAP_FIELDS) {
+      if (data.limits[key] !== undefined) element(id).value = String(data.limits[key] / scale);
+    }
+  }
 }
 
 function render(data) {
@@ -55,6 +120,7 @@ function render(data) {
     element("caps").textContent = `Caps: purchases $${(limits.purchase_spend_cents / 100).toFixed(2)}, exposure $${(limits.open_exposure_cents / 100).toFixed(2)}, loss $${(limits.realized_loss_cents / 100).toFixed(2)}, per order $${(limits.order_debit_cents / 100).toFixed(2)}. Fees included; purchases do not reset after exit.`;
   }
   element("scope").textContent = data.scope || "";
+  renderAutopilot(data);
   element("positions").textContent = (data.positions || []).map((position) =>
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
   ).join("\n") || "No routed positions.";
@@ -109,7 +175,7 @@ element("review").addEventListener("click", () => run(async () => {
   element("message").textContent = "Checking prices, account and Jev…";
   const data = await request("/api/jev-proposal", {
     ticker: element("ticker").value.trim(),
-    quantity: exactQuantity(element("quantity").value),
+    quantity: await quantityForReview(),
   });
   if (data.status !== "confirmation_required") {
     element("message").textContent = `Jev chose ${data.status}. No order.`;
@@ -121,6 +187,17 @@ element("review").addEventListener("click", () => run(async () => {
   showProposal();
   element("message").textContent = "Proposal ready. Click Buy to send it, or ignore it to let it expire.";
 }));
+
+element("contracts-mode").addEventListener("click", () => {
+  amountMode = "contracts";
+  renderAmountMode();
+  if (proposal) clearProposal();
+});
+element("dollars-mode").addEventListener("click", () => {
+  amountMode = "dollars";
+  renderAmountMode();
+  if (proposal) clearProposal();
+});
 
 function showProposal() {
   element("proposal").hidden = false;
@@ -142,6 +219,31 @@ element("confirm").addEventListener("click", () => run(async () => {
   await clearProposal();
   ready = false;
 }));
+
+for (const [id] of CAP_FIELDS) element(id).addEventListener("input", () => { capsEdited = true; });
+
+element("save-caps").addEventListener("click", () => run(async () => {
+  const limits = {};
+  for (const [id, key, scale] of CAP_FIELDS) {
+    const value = Number(element(id).value);
+    if (!Number.isFinite(value) || value <= 0 || Math.round(value) !== value) {
+      throw new Error("Caps must be positive whole numbers.");
+    }
+    limits[key] = value * scale;
+  }
+  await request("/api/execution?action=limits", { confirmed: true, limits });
+  capsEdited = false;
+  render(await request("/api/execution?action=status"));
+  element("message").textContent = "Caps saved.";
+}));
+
+for (const [id, enabled] of [["autopilot-on", true], ["autopilot-off", false]]) {
+  element(id).addEventListener("click", () => run(async () => {
+    await request("/api/execution?action=autopilot", { confirmed: true, enabled });
+    render(await request("/api/execution?action=status"));
+    element("message").textContent = enabled ? "Autopilot is ON." : "Autopilot is OFF.";
+  }));
+}
 
 for (const action of ["pause", "reconcile", "resume"]) {
   element(action).addEventListener("click", () => run(async () => {
@@ -188,6 +290,7 @@ if (pending && pending.base === saved.base && pending.proposal.expires_ms > Date
   showProposal();
 }
 controls();
+renderAmountMode();
 if (saved.passcode) {
   await run(async () => {
     render(await request("/api/execution?action=status"));
