@@ -846,16 +846,45 @@ def analyse(
     return out
 
 
+async def backfill_candles(history_dir: Path, days: int) -> None:  # pragma: no cover
+    """Every KXBTC and KXBTCD strike's 1-minute candles (no tradeable filter)."""
+    from edgebook.config import KALSHI_URLS
+    from edgebook.history import kalshi as kh
+    from edgebook.venues.kalshi.rest import KalshiRest
+
+    rest = KalshiRest(KALSHI_URLS["production"])
+    try:
+        for series in (RANGE, LADDER):
+            await kh.backfill(rest, history_dir, series, days, keep_all=True)
+    finally:
+        await rest.aclose()
+
+
 def main() -> None:  # pragma: no cover - research entry point
     import argparse
+    import asyncio
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("data_dir", type=Path, help="recorder Parquet root (book/, markets/...)")
+    parser.add_argument(
+        "data_dir", type=Path, nargs="?", help="recorder Parquet root (book/, markets/...)"
+    )
     parser.add_argument("--paper", type=Path, help="paper account JSON with longshot fills")
     parser.add_argument("--history", type=Path, help="1-minute candle backfill (KXBTC+KXBTCD)")
+    parser.add_argument(
+        "--backfill-days", type=int, help="first backfill this many days of candles into --history"
+    )
     parser.add_argument("--out", type=Path, default=Path("reports/range_ladder.json"))
     args = parser.parse_args()
-    res = analyse(args.data_dir, args.paper, args.history)
+    if args.backfill_days:
+        if args.history is None:
+            parser.error("--backfill-days needs --history")
+        asyncio.run(backfill_candles(args.history, args.backfill_days))
+    if args.data_dir is not None:
+        res = analyse(args.data_dir, args.paper, args.history)
+    elif args.history is not None:
+        res = {"candles": candle_pass(args.history)}
+    else:
+        parser.error("give a recorder folder, --history, or both")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(res, indent=2, default=float))
     print(
