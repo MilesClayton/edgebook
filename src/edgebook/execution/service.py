@@ -223,11 +223,19 @@ class ExecutionService:
             if refresh:
                 with suppress(Exception):
                     await self.refresh()
+            state = self.ledger.status()
+            age = self.clock() - state["account_updated_ms"]
             return {
-                **self.ledger.status(),
+                **state,
                 "configured": True,
                 "enabled": self.settings.enabled,
                 "environment": self.settings.environment,
+                # The panel runs on the viewer's clock, which can be skewed from this host's,
+                # so it cannot judge this host's timestamps. Freshness is decided here against
+                # the same bound the order gates use.
+                "account_age_ms": max(0, age),
+                "account_fresh": 0 <= age <= self.settings.account_max_age_ms,
+                "account_max_age_ms": self.settings.account_max_age_ms,
                 "paper_proof": {
                     "strategy": self.settings.proof_strategy,
                     "required": self.settings.require_paper_proof,
@@ -242,7 +250,7 @@ class ExecutionService:
                 "market_coverage": {
                     "series": list(self.settings.series),
                     "entry_markets": len(self.tickers()) if self.tickers else 0,
-                    "managed_positions": len(self.ledger.status()["positions"]),
+                    "managed_positions": len(state["positions"]),
                 },
                 "longshot_available": self.longshot_quotes is not None,
                 "longshot_last": self.longshot_last,

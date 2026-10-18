@@ -176,8 +176,11 @@ function meter(id, used, capCents) {
 
 function render(data, quiet = false) {
   status = data;
+  // Freshness comes from the server: subtracting its account timestamp from this machine's
+  // clock made a skewed local clock look like a dropped broker connection. Absent field
+  // means an older server, so stay closed rather than enabling order buttons on a guess.
   ready = data.configured && data.enabled && !data.paused && !data.unknown_or_pending
-    && Date.now() - data.account_updated_ms <= 5000;
+    && data.account_fresh === true;
   element("mode").textContent = data.environment ? data.environment.toUpperCase() : "SETUP";
   element("account").hidden = !data.configured;
   element("state").textContent = data.paused ? data.auto_recovery ? "RECOVERING" : "STOPPED" : data.autopilot || data.longshot ? "RUNNING" : "MANUAL";
