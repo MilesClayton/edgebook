@@ -156,6 +156,11 @@ def test_partial_fills_restart_cumulative_spend_and_settlement(tmp_path: Path) -
     assert status["realized_loss"] == "0.20500000"
     with pytest.raises(GuardError, match="changed"):
         restarted.settle(TICKER, DOLLAR, NOW + 6)
+    # Kalshi keeps listing the settled units until it pays out; any other amount still pauses
+    restarted.account(NOW + 7, DOLLAR, {TICKER: 50})
+    restarted.account(NOW + 8, DOLLAR, {})
+    with pytest.raises(GuardError, match="differ"):
+        restarted.account(NOW + 9, DOLLAR, {TICKER: 100})
     # stored caps win over settings (they are owner-edited through set_limits)
     reopened = SQLiteLedger(path, LIMITS.model_copy(update={"purchase_spend_cents": 501}))
     assert reopened.limits == LIMITS
