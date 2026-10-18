@@ -17,7 +17,7 @@ async def running(path: Path) -> Harness:
 
 
 async def clean_check(h: Harness) -> bool:
-    h.clock[0] += 5000
+    h.clock[0] += 1000
     await h.service.refresh()
     return h.ledger.recover_if_ready(h.clock[0], h.settings.account_max_age_ms)
 

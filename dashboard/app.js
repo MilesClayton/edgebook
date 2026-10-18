@@ -288,7 +288,7 @@ function engineReadiness(d, execution) {
   const detail = execUnknown
     ? "Execution status is loading. No order can be submitted until it is confirmed."
     : execPaused && execution.auto_recovery
-      ? `Temporary broker interruption. Retrying every 5 seconds · ${execution.recovery_checks || 0}/3 clean account checks before automatic recovery.`
+      ? `Temporary broker interruption. Retrying every second · ${execution.recovery_checks || 0}/3 clean account checks before automatic recovery.`
     : execPaused
       ? "Live execution is paused. The engine can watch markets but cannot send an order."
       : execution.autopilot || execution.longshot

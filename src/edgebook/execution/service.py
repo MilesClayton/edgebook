@@ -610,7 +610,7 @@ class ExecutionService:
                 logging.getLogger(__name__).warning(
                     "Recovery check failed: %s", type(error).__name__
                 )
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
     def position(self, ticker: str) -> dict[str, Any] | None:
         return next(

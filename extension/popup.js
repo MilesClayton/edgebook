@@ -208,7 +208,7 @@ function render(data, quiet = false) {
   else if (data.autopilot) element("autopilot-state").textContent = "Jev is watching your markets";
   else element("autopilot-state").textContent = "Ready when you are";
   if (data.error) element("now-outcome").textContent = data.auto_recovery
-    ? `Retrying every 5 seconds · ${data.recovery_checks || 0}/3 clean account checks. Trading resumes automatically when healthy.`
+    ? `Retrying every second · ${data.recovery_checks || 0}/3 clean account checks. Trading resumes automatically when healthy.`
     : plainOutcome({ outcome: `refused: ${data.error}` });
   element("positions").textContent = (data.positions || []).map((position) =>
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
