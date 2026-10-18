@@ -246,7 +246,7 @@ class KalshiBroker:
     async def cancel(self, order_id: str) -> None:
         """Cancel one resting order. Already gone (404) is fine; reconciliation reads the
         final status and fills either way."""
-        url = f"{self.base}/portfolio/orders/{order_id}"
+        url = f"{self.base}/portfolio/events/orders/{order_id}"
         await self.write_bucket.acquire()
         response = await self.client.delete(
             url,

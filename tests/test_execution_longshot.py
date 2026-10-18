@@ -299,6 +299,8 @@ async def test_broker_resting_order_cancel_and_account(signer: KalshiSigner) -> 
         if request.method == "POST":
             return httpx.Response(201, json={"order_id": "o-1", "client_order_id": "c"})
         if request.method == "DELETE":
+            if not path.startswith("/portfolio/events/orders/"):
+                return httpx.Response(410, json={"code": "deprecated_endpoint"})
             return httpx.Response(404 if path.endswith("gone") else 200, json={})
         return httpx.Response(200, json=routes[path])
 
@@ -316,7 +318,8 @@ async def test_broker_resting_order_cancel_and_account(signer: KalshiSigner) -> 
         await broker.submit(intent(action="sell"), "c", resting_until_s=1234)
     await broker.cancel("o-1")
     assert seen[-1].method == "DELETE"
-    assert seen[-1].url.path == "/trade-api/v2/portfolio/orders/o-1"
+    assert seen[-1].url.path == "/trade-api/v2/portfolio/events/orders/o-1"
+    assert seen[-1].url.params["exchange_index"] == "2"
     assert seen[-1].url.params["subaccount"] == "2"
     assert "KALSHI-ACCESS-SIGNATURE" in seen[-1].headers
     await broker.cancel("gone")  # already canceled or filled: fine
@@ -377,3 +380,19 @@ async def test_http_longshot_switch(pilot: Pilot, tmp_path: Path) -> None:
         status = await (await client.get("/execution/status", headers=operator)).json()
         assert status["longshot_available"] is True
         assert status["longshot_paper_proof"]["strategy"] == "longshot"
+
+
+async def test_start_cannot_override_failed_resting_cancel(pilot: Pilot) -> None:
+    await pilot.service.set_budget(500)
+    await pilot.start()
+    await pilot.service.longshot_step()
+
+    async def broken(order_id: str) -> None:
+        raise OSError('offline')
+
+    pilot.broker.cancel = broken  # type: ignore[method-assign]
+    generation = pilot.harness.ledger.status()['generation']
+    with pytest.raises(GuardError, match='cancellation not confirmed'):
+        await pilot.service.start('longshot', generation)
+    assert pilot.harness.ledger.status()['paused'] is True
+    assert pilot.broker.submissions == 1

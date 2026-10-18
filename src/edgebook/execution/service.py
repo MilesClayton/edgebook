@@ -262,6 +262,9 @@ class ExecutionService:
             self.ledger.pause(self.clock(), "preparing automatic trading")
             await self.cancel_resting("trading approach changed")
             await self.refresh()
+            if self.resting():
+                self.ledger.pause(self.clock(), "resting order cancellation not confirmed")
+                raise GuardError("resting order cancellation not confirmed; refresh before Start")
             self.ledger.set_autopilot(strategy != "longshot", self.clock())
             self.ledger.set_autopilot(strategy != "autopilot", self.clock(), kind="longshot")
             self.ledger.resume(self.clock(), self.settings.account_max_age_ms)
