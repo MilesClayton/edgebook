@@ -1,5 +1,6 @@
 """The long-shot seller: quoting rule, event cap, fills and the research helpers."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
@@ -94,7 +95,10 @@ def test_engine_longshot_seller_fills_and_settles(tmp_path: Path) -> None:
         "KXBTCD-26OCT1611-T82099.99", "KXBTCD", CLOSE_H - 3600, CLOSE_H, "greater", 82_099.99, None
     )
     s.markets[other.ticker] = other
-    assert other in eng.live_markets(NOW, eng.runners[0])  # every strike, not just the nearest
+    # only strikes with a long-shot price are fully evaluated (cheap top-of-book check first)
+    assert other not in eng.live_markets(NOW, eng.runners[0])  # no quotes yet
+    s.books[other.ticker] = s.books[m.ticker]  # same 4c UP long shot
+    assert other in eng.live_markets(NOW, eng.runners[0])  # any strike, not just the nearest
     # the filled part plus the order still working on that strike: the whole $2.5k budget
     assert eng._event_exposure(eng.runners[0], other.ticker) == pytest.approx(2_500, rel=0.01)
     eng.clock = lambda: CLOSE_H * 1000 + 1
@@ -109,14 +113,24 @@ def test_engine_longshot_says_why_not(tmp_path: Path) -> None:
     eng = LiveEngine(
         world(spot=82_000.0), tmp_path / "p.json", clock=lambda: NOW, strategies=[SPEC]
     )
-    [c] = [c for c in eng.tick() if c.ticker == "M"]
+    assert eng.tick() == []  # a 50/50 market is not a long shot: not even evaluated
+    s, _ = hourly_world()
+    picky = replace(SPEC, longshot=LongshotConfig(min_secs_left=3000))  # needs 50+ min left
+    late = LiveEngine(s, tmp_path / "r.json", clock=lambda: NOW, strategies=[picky])
+    [c] = late.tick()  # a long shot, but too close to the close (for this config) to sell
     assert c.action == "NO TRADE"
     assert c.reason.startswith("No long shot to sell")
-    stale = LiveEngine(
-        world(spot=82_000.0), tmp_path / "q.json", clock=lambda: NOW + 9_000, strategies=[SPEC]
-    )
-    [c2] = [c for c in stale.tick() if c.ticker == "M"]
+    s2, _ = hourly_world()
+    stale = LiveEngine(s2, tmp_path / "q.json", clock=lambda: NOW + 9_000, strategies=[SPEC])
+    [c2] = stale.tick()
     assert c2.reason.startswith("Waiting")
+    # re-quotes every 5 s; in between it only matches fills
+    stale.clock = lambda: NOW + 10_000
+    stale.tick()
+    assert stale.runners[0].last_tick_ms == NOW + 9_000  # skipped: last quotes stand
+    stale.clock = lambda: NOW + 14_000
+    stale.tick()
+    assert stale.runners[0].last_tick_ms == NOW + 14_000
 
 
 def test_longshot_research_tables(tmp_path: Path) -> None:

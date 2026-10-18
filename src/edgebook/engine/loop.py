@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 TRADED_SERIES = ("KXBTC15M", "KXBTCD")
 HOURLY_STRIKES_SHOWN = 6
 DECISION_LOG_EVERY_MS = 10_000
+LONGSHOT_EVERY_MS = 5_000  # the long-shot seller re-quotes every 5 s (it evaluates many strikes)
 FITTED_WEIGHT_FILE = "model_weight.json"
 
 
@@ -118,6 +119,7 @@ class StrategyRunner:
         self.last_action: dict[str, str] = {}
         self.signal_log: deque[dict[str, Any]] = deque(maxlen=200)
         self.maker = MakerBook() if spec.mode in ("maker", "longshot") else None
+        self.last_tick_ms = 0
 
     def save(self) -> None:
         self.account.save(self.account_path)
@@ -210,8 +212,23 @@ class LiveEngine:
         now_s = t_ms / 1000
         live = [m for m in self.state.markets.values() if m.open_ts <= now_s < m.close_ts]
         if runner.spec.mode == "longshot":  # every strike: long shots sit far from the index
-            horizon = now_s + runner.spec.longshot.max_secs_left
-            return [m for m in live if m.close_ts <= horizon] + [
+            cfg = runner.spec.longshot
+            horizon = now_s + cfg.max_secs_left
+            working = set(runner.account.holdings) | set(
+                runner.maker.orders if runner.maker else ()
+            )
+
+            def candidate(m: MarketInfo) -> bool:
+                # cheap top-of-book look first; the full evaluation is only for real long shots
+                if m.ticker in working:
+                    return True
+                for side in ("yes", "no"):
+                    asks = self.state.asks(m.ticker, side)
+                    if asks and cfg.min_ask <= asks[0].price <= cfg.max_ask:
+                        return True
+                return False
+
+            return [m for m in live if m.close_ts <= horizon and candidate(m)] + [
                 self.state.markets[t]
                 for t in runner.account.holdings
                 if t in self.state.markets
@@ -238,6 +255,12 @@ class LiveEngine:
     def tick(self) -> list[Call]:
         t = self.clock()
         for r in self.runners:
+            if r.spec.mode == "longshot" and t - r.last_tick_ms < LONGSHOT_EVERY_MS:
+                # re-quote every few seconds; fills from real prints are still matched now
+                if r.maker is not None:
+                    r.maker.match(self.state, r.account)
+                continue
+            r.last_tick_ms = t
             self._tick_runner(r, t)
         if (
             self.decision_log_dir is not None

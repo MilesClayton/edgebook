@@ -124,6 +124,11 @@ def exit_hysteresis(cfg: EngineConfig) -> float:
 
 def buy_limit(fair: float, min_edge: float) -> float | None:
     """Highest whole-cent price p with fair - p - fee(p) >= min_edge (None if none)."""
+    return _buy_limit(round(fair, 6), min_edge)
+
+
+@lru_cache(maxsize=65536)
+def _buy_limit(fair: float, min_edge: float) -> float | None:
     best = None
     for cents in range(1, 100):
         p = cents / 100
@@ -134,6 +139,11 @@ def buy_limit(fair: float, min_edge: float) -> float | None:
 
 def sell_trigger(fair: float, hysteresis: float) -> float | None:
     """Lowest whole-cent bid b where b - fee(b) >= fair - hysteresis (None if never)."""
+    return _sell_trigger(round(fair, 6), hysteresis)
+
+
+@lru_cache(maxsize=65536)
+def _sell_trigger(fair: float, hysteresis: float) -> float | None:
     for cents in range(1, 100):
         b = cents / 100
         if b - fee(b) >= fair - hysteresis - 1e-9:
