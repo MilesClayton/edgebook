@@ -15,8 +15,10 @@ replayed, so the "exchanges in line with index" check always passes here.
 
 from __future__ import annotations
 
+import functools
 import heapq
 import json
+import operator
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from decimal import Decimal
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from edgebook.core.book import BookState
@@ -77,12 +80,22 @@ def load_markets(directory: Path) -> dict[str, ReplayMarket]:
 
 
 def _stream(
-    directory: Path, name: str, columns: list[str], start_ms: int, end_ms: int
+    directory: Path,
+    name: str,
+    columns: list[str],
+    start_ms: int,
+    end_ms: int,
+    series: Sequence[str] | None = None,
 ) -> Iterator[tuple[int, int, str, dict[str, Any]]]:
     path = directory / name
     if not path.exists():
         return
     flt = (ds.field("recv_ts_ms") >= start_ms) & (ds.field("recv_ts_ms") < end_ms)
+    if series:
+        prefix = functools.reduce(
+            operator.or_, (pc.starts_with(ds.field("ticker"), f"{s}-") for s in series)
+        )
+        flt = flt & prefix
     files = sorted(str(f) for f in path.rglob("*.parquet") if f.stat().st_size > 0)
     # files are written in arrival order; sort within each file to be safe
     for i, f in enumerate(files):
@@ -98,9 +111,11 @@ def _stream(
 
 
 def events(
-    directory: Path, start_ms: int, end_ms: int
+    directory: Path, start_ms: int, end_ms: int, series: Sequence[str] | None = None
 ) -> Iterator[tuple[int, int, str, dict[str, Any]]]:
-    """(recv_ms, order, stream, row) merged across book/trades/index by arrival time."""
+    """(recv_ms, order, stream, row) merged across book/trades/index by arrival time.
+
+    ``series`` keeps only those series' book and trade rows (e.g. skip the range markets)."""
     return heapq.merge(
         _stream(
             directory,
@@ -108,6 +123,7 @@ def events(
             ["recv_ts_ms", "kind", "ticker", "side", "price", "qty"],
             start_ms,
             end_ms,
+            series,
         ),
         _stream(
             directory,
@@ -115,6 +131,7 @@ def events(
             ["recv_ts_ms", "ticker", "yes_price", "count", "taker_side"],
             start_ms,
             end_ms,
+            series,
         ),
         _stream(directory, "index", ["recv_ts_ms", "index_id", "raw"], start_ms, end_ms),
         key=lambda e: (e[0], e[1]),
