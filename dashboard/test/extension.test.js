@@ -152,3 +152,57 @@ test("popup remembers the password, auto-connects, resumes and buys in one click
   await popup.element("forget").listeners.click();
   assert.deepEqual(storage.local, { base: "https://fixture-dashboard.test" });
 });
+
+test("popup saves money caps and switches autopilot with explicit confirmation", async () => {
+  let autopilot = false;
+  let limits = { purchase_spend_cents: 500, open_exposure_cents: 300, realized_loss_cents: 300,
+    order_debit_cents: 100, max_contracts: 1 };
+  const sent = [];
+  const fetch = async (url, options) => {
+    const body = options.body && JSON.parse(options.body);
+    sent.push({ url, body });
+    let result;
+    if (url.endsWith("action=status")) result = {
+      configured: true, enabled: true, paused: false, environment: "production",
+      account_updated_ms: Date.now(), remaining_purchase_budget: "5.0", open_exposure: "0",
+      realized_loss: "0", positions: [], orders: [], limits, autopilot, autopilot_available: true,
+      autopilot_last: autopilot ? [{ at_ms: Date.now(), ticker: "KXBTC15M-FIXTURE",
+        jev: { action: "hold", confidence: 0.4 }, outcome: "no order: hold" }] : [],
+    };
+    else if (url.endsWith("/api/data?kind=live")) result = { data: { updated_ms: Date.now(), calls: [] } };
+    else if (url.endsWith("action=limits")) { limits = body.limits; result = { limits }; }
+    else if (url.endsWith("action=autopilot")) { autopilot = body.enabled; result = { autopilot }; }
+    else throw new Error("Unexpected fixture request");
+    return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  };
+  const storage = { local: { base: "https://fixture-dashboard.test", passcode: "fixture-password" }, session: {} };
+  const popup = popupHarness(storage, fetch);
+  await popup.open();
+  assert.equal(popup.element("cap-loss").value, "3");
+  assert.equal(popup.element("autopilot-on").disabled, false);
+  assert.equal(popup.element("autopilot-off").disabled, true);
+
+  for (const [id, value] of [["cap-spend", "50"], ["cap-exposure", "15"], ["cap-loss", "15"],
+    ["cap-order", "5"], ["cap-contracts", "1"]]) {
+    popup.element(id).value = value;
+    popup.element(id).listeners.input();
+  }
+  await popup.element("save-caps").listeners.click();
+  const saved = sent.find((item) => item.url.endsWith("action=limits")).body;
+  assert.deepEqual(saved, { confirmed: true, limits: { purchase_spend_cents: 5000,
+    open_exposure_cents: 1500, realized_loss_cents: 1500, order_debit_cents: 500, max_contracts: 1 } });
+
+  popup.element("cap-loss").value = "2.5";
+  await popup.element("save-caps").listeners.click();
+  assert.match(popup.element("message").textContent, /whole numbers/);
+  assert.equal(sent.filter((item) => item.url.endsWith("action=limits")).length, 1);
+
+  await popup.element("autopilot-on").listeners.click();
+  assert.deepEqual(sent.find((item) => item.url.endsWith("action=autopilot")).body,
+    { confirmed: true, enabled: true });
+  assert.match(popup.element("autopilot-state").textContent, /^ON: Jev trades/);
+  assert.match(popup.element("autopilot-log").textContent, /Jev hold \(40%\) · no order: hold/);
+  assert.equal(popup.element("autopilot-off").disabled, false);
+  await popup.element("autopilot-off").listeners.click();
+  assert.match(popup.element("autopilot-state").textContent, /^Off/);
+});

@@ -1,6 +1,8 @@
 import { allowedOrigin, authorized, sessionCookie } from "./lib/access.js";
 
 export default async function middleware(request) {
+  // server-to-server route with its own bearer-token check (api/jev-decide.js)
+  if (new URL(request.url).pathname === "/api/jev-decide") return;
   const passcode = process.env.DASHBOARD_ACCESS_PASSWORD;
   const origin = request.headers.get("origin");
   const host = new URL(request.url).host;

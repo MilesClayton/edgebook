@@ -62,6 +62,10 @@ class SQLiteLedger:
         with self.transaction() as db:
             row = db.execute("SELECT value FROM meta WHERE id=1").fetchone()
             binding = {"identity": identity, "limits": limits.model_dump()}
+            if row is not None and self.state(db)["identity"] == identity:
+                # caps are owner-editable (set_limits); the ledger's stored caps are
+                # authoritative and settings only seed a new ledger. Spend/loss never reset.
+                self.limits = Limits.model_validate(self.state(db)["limits"])
             if row is None:
                 if db.execute("SELECT 1 FROM orders LIMIT 1").fetchone():
                     raise GuardError("ledger binding missing for existing orders")
@@ -76,10 +80,8 @@ class SQLiteLedger:
                     "error": "reconciliation required",
                 }
                 db.execute("INSERT INTO meta VALUES(1,?)", (json.dumps(state),))
-            elif any(self.state(db)[key] != value for key, value in binding.items()):
-                raise GuardError(
-                    "ledger identity or limits changed; existing budget cannot be reset"
-                )
+            elif self.state(db)["identity"] != identity:
+                raise GuardError("ledger identity changed; existing budget cannot be reset")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -140,6 +142,25 @@ class SQLiteLedger:
             self.save_state(db, state)
             self.event(db, now, "restart", {"paused": True})
 
+    def set_limits(self, limits: Limits, now: int) -> Limits:
+        """Owner changes the caps. Spend, exposure and loss so far are kept, so raising a
+        cap adds room and lowering one below what is already used blocks new entries."""
+        with self.transaction() as db:
+            state = self.state(db)
+            old = state["limits"]
+            state["limits"] = limits.model_dump()
+            self.save_state(db, state)
+            self.event(db, now, "limits_changed", {"from": old, "to": state["limits"]})
+        self.limits = limits
+        return limits
+
+    def set_autopilot(self, enabled: bool, now: int) -> None:
+        with self.transaction() as db:
+            state = self.state(db)
+            state["autopilot"] = enabled
+            self.save_state(db, state)
+            self.event(db, now, "autopilot", {"enabled": enabled})
+
     def pause(self, now: int, reason: str = "user paused") -> None:
         with self.transaction() as db:
             state = self.state(db)
@@ -153,7 +174,7 @@ class SQLiteLedger:
             self.check_account(db, state, now, max_age)
             state.update(paused=False, error="", generation=state["generation"] + 1)
             self.save_state(db, state)
-            self.event(db, now, "resume", {"unattended": False})
+            self.event(db, now, "resume", {"unattended": bool(state.get("autopilot", False))})
 
     def account(self, now: int, balance: int, positions: Mapping[str, int]) -> None:
         with self.transaction() as db:
@@ -301,6 +322,7 @@ class SQLiteLedger:
                     raise GuardError("idempotency key reused for a different proposal")
                 return self.order_view(row), False
             state = self.state(db)
+            self.limits = Limits.model_validate(state["limits"])
             if proposal["used"] or proposal["generation"] != state["generation"]:
                 raise GuardError("proposal consumed or invalidated by pause/resume")
             if now >= proposal["expires"]:
@@ -565,9 +587,11 @@ class SQLiteLedger:
     def status(self) -> dict[str, Any]:
         with self.connection() as db:
             state = self.state(db)
+            self.limits = Limits.model_validate(state["limits"])
             spent, exposure = self.totals(db)
             return {
                 "paused": state["paused"],
+                "autopilot": bool(state.get("autopilot", False)),
                 "account_updated_ms": state["account_ms"],
                 "error": state["error"],
                 "limits": self.limits.model_dump(),

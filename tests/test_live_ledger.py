@@ -156,8 +156,9 @@ def test_partial_fills_restart_cumulative_spend_and_settlement(tmp_path: Path) -
     assert status["realized_loss"] == "0.20500000"
     with pytest.raises(GuardError, match="changed"):
         restarted.settle(TICKER, DOLLAR, NOW + 6)
-    with pytest.raises(GuardError, match="identity or limits"):
-        SQLiteLedger(path, LIMITS.model_copy(update={"purchase_spend_cents": 501}))
+    # stored caps win over settings (they are owner-edited through set_limits)
+    reopened = SQLiteLedger(path, LIMITS.model_copy(update={"purchase_spend_cents": 501}))
+    assert reopened.limits == LIMITS
 
 
 def test_unknown_rejection_and_account_gates(tmp_path: Path) -> None:
