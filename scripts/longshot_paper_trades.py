@@ -13,24 +13,25 @@ import json
 import re
 import sys
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
 from edgebook.research.longshot_gaps import event_ci
 
-ET = timedelta(hours=-4)  # Kalshi tickers use US Eastern time (EDT in October)
+ET = ZoneInfo("America/New_York")  # Kalshi tickers use US Eastern time
 FAIR = re.compile(r"fair value ([0-9.]+)")
 
 
 def close_of(ticker: str) -> datetime:
     """KXBTCD-26OCT1806-T... closes 06:00 ET; KXBTC15M-26OCT180530-30 closes 05:30 ET."""
     stamp = ticker.split("-")[1]
-    day = datetime.strptime(stamp[:7], "%y%b%d").replace(tzinfo=UTC)  # a date; ET applied below
+    day = datetime.strptime(stamp[:7], "%y%b%d").replace(tzinfo=ET)  # wall-clock date in ET
     hour, minute = int(stamp[7:9]), int(stamp[9:11]) if len(stamp) > 9 else 0
-    return day + timedelta(hours=hour, minutes=minute) - ET
+    return day.replace(hour=hour, minute=minute).astimezone(UTC)
 
 
 def trades(account: dict[str, Any]) -> list[dict[str, Any]]:
@@ -56,11 +57,14 @@ def trades(account: dict[str, Any]) -> list[dict[str, Any]]:
                 "ticker": tk,
                 "event": tk.rsplit("-", 1)[0],
                 "series": tk.split("-")[0],
-                "sold": "UP" if b[0]["side"] == "no" else "DOWN",
+                # buying NO sells the YES long shot; a range's YES is "inside", not "up"
+                "sold": ("YES" if tk.startswith("KXBTC-") else "UP")
+                if b[0]["side"] == "no"
+                else ("NO" if tk.startswith("KXBTC-") else "DOWN"),
                 "long_price": 1 - price,
                 "minutes_left": (close.timestamp() * 1000 - first) / 60_000,
                 "fair_minus_price": (np.mean(fair) - price) if fair else float("nan"),
-                "hour_et": (close + ET).hour,
+                "hour_et": close.astimezone(ET).hour,
                 "contracts": contracts,
                 "pnl": s["pnl"],
                 "pnl_per_contract": s["pnl"] / s["contracts"],
@@ -113,7 +117,15 @@ RANGES: dict[str, tuple[str, list[tuple[str, Any]]]] = {
             (">60", (61, 1e9)),
         ],
     ),
-    "sold": ("sold", [("sold UP", "UP"), ("sold DOWN", "DOWN")]),
+    "sold": (
+        "sold",
+        [
+            ("sold UP", "UP"),
+            ("sold DOWN", "DOWN"),
+            ("sold range YES", "YES"),
+            ("sold range NO", "NO"),
+        ],
+    ),
     "fair_minus_price": (
         "fair_minus_price",
         [("fair <= price", (-1, 0.0001)), ("fair > price", (0.0001, 1))],
