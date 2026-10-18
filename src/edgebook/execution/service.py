@@ -70,6 +70,7 @@ class ExecutionService:
         tickers: Callable[[], list[str]] | None = None,
         longshot_quotes: Callable[[], list[dict[str, Any]]] | None = None,
         longshot_proof: Callable[[], dict[str, Any]] | None = None,
+        scanner: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.settings, self.ledger, self.broker = settings, ledger, broker
         self.source, self.clock = source, clock
@@ -81,6 +82,7 @@ class ExecutionService:
         self.longshot_quotes = longshot_quotes
         self.longshot_proof = longshot_proof
         self.longshot_last: list[dict[str, Any]] = []
+        self.scanner = scanner
         self.lock = asyncio.Lock()
 
     def require_proof(self, route: str, longshot: bool = False) -> None:
@@ -236,6 +238,7 @@ class ExecutionService:
                 "autopilot_last": self.autopilot_last,
                 "autopilot_every_s": self.settings.autopilot_every_s,
                 "longshot_every_s": self.settings.longshot_every_s,
+                "scanner": self.scanner() if self.scanner else None,
                 "market_coverage": {
                     "series": list(self.settings.series),
                     "entry_markets": len(self.tickers()) if self.tickers else 0,

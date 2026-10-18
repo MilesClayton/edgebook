@@ -71,7 +71,7 @@ async def test_failure_restarts_clean_check_counter(tmp_path: Path) -> None:
     assert await clean_check(h)
 
 
-async def test_account_mismatch_and_restart_are_latched(tmp_path: Path) -> None:
+async def test_account_mismatch_stays_blocked_but_running_restart_recovers(tmp_path: Path) -> None:
     h = await running(tmp_path / "ledger.sqlite3")
     h.broker.positions[TICKER] = 100
     with pytest.raises(GuardError, match="positions differ"):
@@ -84,8 +84,21 @@ async def test_account_mismatch_and_restart_are_latched(tmp_path: Path) -> None:
     await h.service.control("resume")
     h.ledger.pause(h.clock[0], "temporary", recoverable=True)
     h.ledger.recover(h.clock[0])
+    assert h.ledger.status()["auto_recovery"]
+    assert not await clean_check(h)
+    assert not await clean_check(h)
+    assert await clean_check(h)
+
+
+async def test_restart_never_undoes_manual_stop(tmp_path: Path) -> None:
+    h = await running(tmp_path / "ledger.sqlite3")
+    await h.service.control("pause")
+    h.ledger.recover(h.clock[0])
+    for _ in range(4):
+        assert not await clean_check(h)
+    assert h.ledger.status()["paused"]
     assert not h.ledger.status()["auto_recovery"]
-    assert h.ledger.status()["pause_kind"] == "restart"
+    assert h.ledger.status()["error"] == "user paused"
 
 
 async def test_unknown_order_never_enables_recovery(tmp_path: Path) -> None:

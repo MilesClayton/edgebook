@@ -257,7 +257,10 @@ class KalshiBroker:
             response.raise_for_status()
 
     async def find_order(self, client_id: str, order_id: str | None) -> dict[str, Any] | None:
-        params = {"subaccount": self.subaccount, "exchange_index": self.exchange_index}
+        params: dict[str, str | int] = {
+            "subaccount": self.subaccount,
+            "exchange_index": self.exchange_index,
+        }
         if order_id:
             try:
                 return dict((await self.get(f"/portfolio/orders/{order_id}", params))["order"])

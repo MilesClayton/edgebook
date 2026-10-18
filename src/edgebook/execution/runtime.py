@@ -212,6 +212,18 @@ def build_service(
                     paper.account.closed, settings.proof_min_trades, settings.proof_min_days
                 )
 
+        def scanner() -> dict[str, Any]:
+            # Paper/model evaluation keeps running independently of order permissions.
+            checked = engine.primary.last_tick_ms
+            age = engine.clock() - checked
+            return {
+                "running": 0 <= age <= 3000 and checked > 0,
+                "checked_ms": checked,
+                "markets_watched": len(tickers()),
+                "evaluated_markets": len(engine.primary.calls),
+                "longshot_markets": len(paper.calls) if seller is not None else 0,
+            }
+
         service = ExecutionService(
             settings,
             ledger,
@@ -223,6 +235,7 @@ def build_service(
             tickers=tickers if decide is not None else None,
             longshot_quotes=sales,
             longshot_proof=seller_proof,
+            scanner=scanner,
         )
         return service, broker, owner
     except BaseException:
