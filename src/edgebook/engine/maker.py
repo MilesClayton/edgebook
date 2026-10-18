@@ -167,14 +167,17 @@ class MakerBook:
 class LongshotConfig:
     """Sell overpriced long shots as a maker (rest a DOWN bid that joins the UP ask).
 
-    Evidence (research.longshot, 30-day backfill + recorded trades): YES contracts
-    asked at 2-15c win less often than their price, and makers selling them
-    earned roughly +1 to +4c per contract after fees.
+    Evidence (research.longshot, 30-day backfill): long shots *quoted* at 2-15c win less
+    often than their price. research.longshot_gaps shows that edge is in orders that never
+    fill: sales a trade would have reached lost about 1c per contract, and the final
+    15 minutes (which includes every 15-minute-market sale) lost 4-6c in both the earlier
+    and the later closes. Selling stops 15 minutes before close; the rest is still
+    break-even to negative, so this narrows the strategy rather than proving it.
     """
 
     min_ask: float = 0.02  # UP (YES) ask band that counts as a long shot
     max_ask: float = 0.15
-    min_secs_left: float = 300.0
+    min_secs_left: float = 900.0  # the last 15 minutes lost in every period tested
     max_secs_left: float = 3600.0
     max_event_cost: float = 15_000.0  # all strikes of one close move together: cap the sum
 

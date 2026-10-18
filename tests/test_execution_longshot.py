@@ -132,7 +132,7 @@ async def test_pilot_rests_keeps_and_never_adds(pilot: Pilot) -> None:
     await pilot.start()
     notes = await pilot.service.longshot_step()
     assert notes[0]["outcome"] == "resting NO bid 0.6000 x 1.00"
-    assert pilot.broker.bodies[0]["expires_s"] == CLOSE_MS // 1000 - 300
+    assert pilot.broker.bodies[0]["expires_s"] == CLOSE_MS // 1000 - 900  # the paper cut-off
     status = await pilot.service.status()
     assert status["resting_orders"] == 1
     assert status["unknown_or_pending"] is False

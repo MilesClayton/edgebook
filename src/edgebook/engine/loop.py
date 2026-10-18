@@ -98,7 +98,7 @@ DEFAULT_STRATEGIES: tuple[StrategySpec, ...] = (
     StrategySpec(
         "longshot",
         "Long-shot seller (maker)",
-        "Sells overpriced long shots: when UP or DOWN is offered at 2-15¢ with 5-60 min left, "
+        "Sells overpriced long shots: when UP or DOWN is offered at 2-15¢ with 15-60 min left, "
         "rests a bid on the other side that joins the long shot's ask, unless fair value says "
         "the long shot is worth its price. Holds to the result. Up to $2.5k per market and "
         "$15k per close (every strike of one hour moves together).",
