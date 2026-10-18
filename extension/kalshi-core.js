@@ -17,14 +17,25 @@
     }
     if (url.hostname !== "kalshi.com" && !url.hostname.endsWith(".kalshi.com")) return null;
     const path = url.pathname.toLowerCase();
-    const m = TICKER.exec(path);
+    // Kalshi Pro (pro.kalshi.com) may name the market in the query or hash instead of the path
+    let where = path;
+    try {
+      where = `${path} ${decodeURIComponent(url.search + url.hash).toLowerCase()}`;
+    } catch {
+      // malformed escape: the path alone
+    }
+    const m = TICKER.exec(where);
     if (m) {
       const series = m[1].toUpperCase();
       const event = `${series}-${m[2].toUpperCase()}`;
       return { series, event, ticker: m[3] ? `${event}-${m[3].toUpperCase()}` : null };
     }
-    const s = SERIES.exec(path);
-    return s ? { series: s[1].toUpperCase(), event: null, ticker: null } : null;
+    const s = SERIES.exec(path) || /(?:^|[^a-z0-9])(kxbtc15m|kxbtcd)(?![a-z0-9-])/.exec(where);
+    if (s) return { series: s[1].toUpperCase(), event: null, ticker: null };
+    // Pro's multi-market canvas: show the market autopilot trades
+    return url.hostname === "pro.kalshi.com"
+      ? { series: "KXBTC15M", event: null, ticker: null, pro: true }
+      : null;
   }
 
   function belongs(ticker, series, ref) {

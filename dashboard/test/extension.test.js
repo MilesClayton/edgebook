@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { validBase, exactQuantity, formatOrder, proposalText } from "../../extension/view.js";
+import { validBase, exactQuantity, formatOrder, proposalText, plainOutcome, engineLines, clock }
+  from "../../extension/view.js";
 
 test("extension validates origin and exact quantities", () => {
   assert.equal(validBase("https://dashboard.test"), "https://dashboard.test");
@@ -67,8 +68,10 @@ function popupHarness(storage, fetch) {
     const source = await readFile(new URL("../../extension/popup.js", import.meta.url), "utf8");
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     await new AsyncFunction("document", "chrome", "fetch", "setInterval", "formatOrder",
-      "proposalText", "validBase", "exactQuantity", source.slice(source.indexOf("\n") + 1))(
+      "proposalText", "validBase", "exactQuantity", "plainOutcome", "engineLines", "clock",
+      source.slice(source.indexOf("\n") + 1))(
       { getElementById: element }, chrome, fetch, () => {}, formatOrder, proposalText, validBase, exactQuantity,
+      plainOutcome, engineLines, clock,
     );
   } };
 }
@@ -167,7 +170,10 @@ test("popup saves money caps and switches autopilot with explicit confirmation",
       account_updated_ms: Date.now(), remaining_purchase_budget: "5.0", open_exposure: "0",
       realized_loss: "0", positions: [], orders: [], limits, autopilot, autopilot_available: true,
       autopilot_last: autopilot ? [{ at_ms: Date.now(), ticker: "KXBTC15M-FIXTURE",
-        jev: { action: "hold", confidence: 0.4 }, outcome: "no order: hold" }] : [],
+        jev: { action: "hold", confidence: 0.4 }, outcome: "Jev chose hold: no order",
+        engine: { seconds_left: 425, fair_up: 0.62, up_price: 0.6, down_price: 0.41, edge_up: 0.004,
+          edge_down: -0.04, edge_needed: 0.03, failed_gates: [], share_bought_up_5m: 0.7,
+          index_change_5m_bps: -12 } }] : [],
     };
     else if (url.endsWith("/api/data?kind=live")) result = { data: { updated_ms: Date.now(), calls: [] } };
     else if (url.endsWith("action=limits")) { limits = body.limits; result = { limits }; }
@@ -201,8 +207,32 @@ test("popup saves money caps and switches autopilot with explicit confirmation",
   assert.deepEqual(sent.find((item) => item.url.endsWith("action=autopilot")).body,
     { confirmed: true, enabled: true });
   assert.match(popup.element("autopilot-state").textContent, /^ON: Jev trades/);
-  assert.match(popup.element("autopilot-log").textContent, /Jev hold \(40%\) · no order: hold/);
+  assert.match(popup.element("autopilot-log").textContent, /Jev said hold \(40% sure\)\. No order\./);
+  assert.equal(popup.element("state").textContent, "AUTOPILOT ON");
+  assert.match(popup.element("now-market").textContent, /^KXBTC15M-FIXTURE · closes in 7:0\d · checked/);
+  assert.match(popup.element("now-engine").textContent, /UP costs 60¢ · engine says 62% · edge \+0\.4¢/);
+  assert.match(popup.element("now-engine").textContent, /DOWN costs 41¢ · engine says 38% · edge −4\.0¢/);
+  assert.match(popup.element("now-engine").textContent, /at least \+3\.0¢/);
+  assert.match(popup.element("now-engine").textContent, /70% of contracts bought UP · BTC -0\.12% in 5 min/);
+  assert.equal(popup.element("spent").textContent, "$0.00 of $50.00");
+  assert.equal(popup.element("bar-loss").max, 15);
   assert.equal(popup.element("autopilot-off").disabled, false);
   await popup.element("autopilot-off").listeners.click();
   assert.match(popup.element("autopilot-state").textContent, /^Off/);
+});
+
+test("autopilot outcomes read as plain sentences", () => {
+  assert.equal(plainOutcome({ outcome: "refused: deterministic data-quality gates failed: 15 min of index history (warm-up)" }),
+    "Waiting for good data: 15 min of index history (warm-up). No order.");
+  assert.match(plainOutcome({ outcome: "no trade: engine sees no edge after fees" }), /neither side is cheap enough/);
+  assert.match(plainOutcome({ outcome: "already holding this market: autopilot never adds" }), /never buys more/);
+  assert.match(plainOutcome({ outcome: "error: HTTPStatusError" }), /usable answer from Jev \(HTTPStatusError\)/);
+  assert.match(plainOutcome({ outcome: "refused: market closed or outside model horizon" }), /^Blocked by a safety check: market closed/);
+  assert.equal(plainOutcome({ outcome: "order executed", jev: { action: "enter_yes", confidence: 0.81 },
+    order: { intent: { action: "buy", side: "yes" }, status: "executed", filled_quantity: "1.00",
+      fill_cost: "0.4000", fees: "0.0200" } }),
+  "Jev said enter yes (81% sure). Bought UP: filled 1.00 for $0.4000 + $0.0200 fees (executed).");
+  assert.deepEqual(engineLines(undefined), []);
+  assert.equal(clock(65.4), "1:05");
+  assert.equal(clock(-3), "0:00");
 });

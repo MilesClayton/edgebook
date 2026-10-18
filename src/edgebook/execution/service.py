@@ -175,6 +175,7 @@ class ExecutionService:
                 "orders": self.ledger.orders(),
                 "autopilot_available": self.decide is not None and self.tickers is not None,
                 "autopilot_last": self.autopilot_last,
+                "autopilot_every_s": self.settings.autopilot_every_s,
                 "scope": (
                     "Caps cover orders routed here; separate manual trades are outside these caps."
                 ),
@@ -237,6 +238,7 @@ class ExecutionService:
                 ReviewRequest(ticker=ticker, quantity=self.settings.autopilot_contracts)
             )
             context = review["context"]
+            note["engine"] = self._engine_view(context["snapshot"], context["rejections"])
             usable = [
                 a for a in context["candidates"] if holding is not None or a.startswith("enter")
             ]
@@ -274,9 +276,33 @@ class ExecutionService:
             self.ledger.audit(self.clock(), "autopilot_order", note)
         except GuardError as error:
             note["outcome"] = f"refused: {error}"
+            if "engine" not in note:
+                with suppress(Exception):
+                    note["engine"] = self._engine_view(self.source(ticker, holding), {})
         except Exception as error:  # Jev unreachable, malformed answer, etc.: no order
             note["outcome"] = f"error: {type(error).__name__}"
         return note
+
+    def _engine_view(self, snapshot: dict[str, Any], rejections: dict[str, str]) -> dict[str, Any]:
+        """What the engine saw, in the popup's words: prices, its estimate and the edge."""
+        call = snapshot["call"]
+        flow = snapshot.get("market_flow") or {}
+        return {
+            "seconds_left": call.get("seconds_left"),
+            "fair_up": call.get("fair_up"),
+            "up_price": call.get("up_price"),
+            "down_price": call.get("down_price"),
+            "edge_up": call.get("edge_up"),
+            "edge_down": call.get("edge_down"),
+            "edge_needed": self.settings.min_edge + self.settings.latency_buffer,
+            "reason": call.get("reason"),
+            "failed_gates": [k for k, v in (call.get("gates") or {}).items() if v is not True],
+            "rejections": rejections,
+            "share_bought_up_5m": (flow.get("tape") or {})
+            .get("last_5m", {})
+            .get("share_bought_up"),
+            "index_change_5m_bps": (flow.get("momentum") or {}).get("index_change_5m_bps"),
+        }
 
     async def run_autopilot(self) -> None:
         while True:
@@ -323,12 +349,11 @@ class ExecutionService:
         if not 0 <= now - account_state["account_updated_ms"] <= self.settings.account_max_age_ms:
             raise GuardError("account state expired while checking quotes")
         gates = call.get("gates")
-        if (
-            not isinstance(gates, dict)
-            or not gates
-            or any(value is not True for value in gates.values())
-        ):
+        if not isinstance(gates, dict) or not gates:
             raise GuardError("deterministic data-quality gates failed")
+        failed = [str(name) for name, value in gates.items() if value is not True]
+        if failed:
+            raise GuardError("deterministic data-quality gates failed: " + ", ".join(failed))
         fair = finite(call.get("fair_up"), "settlement probability")
         raw_model = finite(call.get("model_up"), "model probability")
         if not 0 <= fair <= 1 or not 0 <= raw_model <= 1:

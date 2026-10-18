@@ -1,4 +1,4 @@
-import { formatOrder, proposalText, validBase, exactQuantity } from "./view.js";
+import { formatOrder, proposalText, validBase, exactQuantity, plainOutcome, engineLines, clock } from "./view.js";
 
 // Personal extension: the dashboard address and password are entered once and remembered on
 // this machine (chrome.storage.local), and the popup connects by itself when opened. The
@@ -85,19 +85,43 @@ const CAP_FIELDS = [
 ];
 let capsEdited = false;
 
+let history = []; // recent autopilot checks, newest last (kept for this browser session)
+
 function renderAutopilot(data) {
   const on = Boolean(data.autopilot);
   element("autopilot-state").textContent = !data.autopilot_available
     ? "Not available: the server has no Jev decision URL configured."
     : on && data.paused
-      ? "ON but paused: Resume to let it trade."
+      ? "ON but paused: press Resume trading to let it trade."
       : on
         ? "ON: Jev trades the current BTC 15-minute market within your caps, no Buy click needed."
         : "Off: nothing is bought without your Buy click.";
-  const log = (data.autopilot_last || []).map((n) =>
-    `${new Date(n.at_ms).toLocaleTimeString()} ${n.ticker}: ${n.jev ? `Jev ${n.jev.action} (${Math.round(n.jev.confidence * 100)}%) · ` : ""}${n.outcome}`);
-  element("autopilot-log").hidden = !log.length;
-  element("autopilot-log").textContent = log.join("\n");
+  for (const note of data.autopilot_last || []) {
+    if (!history.some((h) => h.at_ms === note.at_ms && h.ticker === note.ticker)) history.push(note);
+  }
+  history = history.slice(-30);
+  const latest = history[history.length - 1];
+  const every = data.autopilot_every_s || 15;
+  element("every-s").textContent = String(every);
+  if (latest && on) {
+    const ago = Math.max(0, (Date.now() - latest.at_ms) / 1000);
+    const left = latest.engine?.seconds_left;
+    element("now-market").textContent = [
+      latest.ticker,
+      left == null ? null : `closes in ${clock(left - ago)}`,
+      `checked ${Math.round(ago)} s ago (every ${every} s)`,
+    ].filter(Boolean).join(" · ");
+    element("now-outcome").textContent = plainOutcome(latest);
+  } else {
+    element("now-market").textContent = on ? `First check within ${every} s…` : "";
+    element("now-outcome").textContent = "";
+  }
+  const lines = latest && on ? engineLines(latest.engine) : [];
+  element("now-engine").hidden = !lines.length;
+  element("now-engine").textContent = lines.join("\n");
+  element("autopilot-log").textContent = history.slice().reverse().map((note) =>
+    `${new Date(note.at_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}  ${plainOutcome(note)}`,
+  ).join("\n") || "No checks yet.";
   if (data.limits && !capsEdited) {
     for (const [id, key, scale] of CAP_FIELDS) {
       if (data.limits[key] !== undefined) element(id).value = String(data.limits[key] / scale);
@@ -105,19 +129,34 @@ function renderAutopilot(data) {
   }
 }
 
-function render(data) {
+const usd = (value) => "$" + Number(value || 0).toFixed(2);
+
+function meter(id, used, capCents) {
+  const bar = element(`bar-${id}`);
+  bar.max = capCents ? capCents / 100 : 1;
+  bar.value = Math.min(Number(used || 0), bar.max);
+}
+
+function render(data, quiet = false) {
   status = data;
   ready = data.configured && data.enabled && !data.paused && !data.unknown_or_pending
     && Date.now() - data.account_updated_ms <= 5000;
   element("mode").textContent = data.environment ? data.environment.toUpperCase() : "SETUP";
   element("account").hidden = !data.configured;
-  element("state").textContent = data.paused ? "Paused" : "Trading ready: every order still needs your Buy click";
-  element("budget").textContent = "$" + Number(data.remaining_purchase_budget || 0).toFixed(2);
-  element("exposure").textContent = "$" + Number(data.open_exposure || 0).toFixed(2);
-  element("loss").textContent = "$" + Number(data.realized_loss || 0).toFixed(2);
+  element("state").textContent = data.paused ? "PAUSED" : data.autopilot ? "AUTOPILOT ON" : "MANUAL";
+  element("state").className = `pill${data.paused ? " paused" : data.autopilot ? " on" : ""}`;
+  element("now-updated").textContent = `updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
+  const limits = data.limits || {};
+  const of = (used, cents) => cents ? `${usd(used)} of ${usd(cents / 100)}` : usd(used);
+  element("spent").textContent = of(data.purchase_spend, limits.purchase_spend_cents);
+  element("budget").textContent = usd(data.remaining_purchase_budget);
+  element("exposure").textContent = of(data.open_exposure, limits.open_exposure_cents);
+  element("loss").textContent = of(data.realized_loss, limits.realized_loss_cents);
+  meter("spend", data.purchase_spend, limits.purchase_spend_cents);
+  meter("exposure", data.open_exposure, limits.open_exposure_cents);
+  meter("loss", data.realized_loss, limits.realized_loss_cents);
   if (data.limits) {
-    const limits = data.limits;
-    element("caps").textContent = `Caps: purchases $${(limits.purchase_spend_cents / 100).toFixed(2)}, exposure $${(limits.open_exposure_cents / 100).toFixed(2)}, loss $${(limits.realized_loss_cents / 100).toFixed(2)}, per order $${(limits.order_debit_cents / 100).toFixed(2)}. Fees included; purchases do not reset after exit.`;
+    element("caps").textContent = `Each order: at most ${usd(limits.order_debit_cents / 100)} incl. fees${limits.max_contracts ? ` and ${limits.max_contracts} contract${limits.max_contracts === 1 ? "" : "s"}` : ""}.${data.realized_pnl !== undefined ? ` Profit/loss so far: ${Number(data.realized_pnl) >= 0 ? "+" : "−"}${usd(Math.abs(Number(data.realized_pnl)))}.` : ""}`;
   }
   element("scope").textContent = data.scope || "";
   renderAutopilot(data);
@@ -125,6 +164,8 @@ function render(data) {
     `${position.ticker} · ${position.side.toUpperCase()} · ${(position.units / 100).toFixed(2)} contracts · cost $${(position.cost / 100000000).toFixed(4)}`
   ).join("\n") || "No routed positions.";
   element("orders").textContent = (data.orders || []).slice(-10).reverse().map(formatOrder).join("\n\n") || "No routed orders.";
+  chrome.storage.session.set({ history }).catch(() => {});
+  if (quiet) return controls();
   element("message").textContent = data.reason || data.error || (data.unknown_or_pending
     ? "An order is unresolved. Budget stays reserved; reconcile before continuing."
     : "Connected.");
@@ -279,10 +320,15 @@ for (const id of ["ticker", "quantity", "base"]) element(id).addEventListener("i
 });
 setInterval(controls, 500);
 setInterval(() => { fillTicker().catch(() => {}); }, 30000);
+// keep the "Right now" card current while the popup is open
+setInterval(() => {
+  if (saved.passcode && !busy) request("/api/execution?action=status").then((d) => render(d, true)).catch(() => {});
+}, 5000);
 
 const stored = await chrome.storage.local.get(["base", "passcode"]);
 saved = { base: stored.base || element("base").value, passcode: stored.passcode || "" };
 element("base").value = saved.base;
+history = (await chrome.storage.session.get("history")).history || [];
 const pending = (await chrome.storage.session.get("pending")).pending;
 if (pending && pending.base === saved.base && pending.proposal.expires_ms > Date.now()) {
   proposal = pending.proposal;
