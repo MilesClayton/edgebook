@@ -72,6 +72,8 @@ class LiveState:
         self.composite: CompositeSnapshot | None = None
         self.composite_ms = 0
         self.trades: deque[TradePrint] = deque(maxlen=TRADES_KEPT)
+        self._sigma_key: object = None
+        self._sigma: float | None = None
         self._trade_seq = 0
 
     # ---- updates -------------------------------------------------------
@@ -144,7 +146,17 @@ class LiveState:
         return (sum(vals) / len(vals), len(vals)) if vals else None
 
     def sigma_per_s(self, now_ms: int, halflife_s: float = 300.0) -> float | None:
-        """EWMA per-second log-vol of the index from ~1 Hz prints (needs 2+ minutes)."""
+        """EWMA per-second log-vol of the index from ~1 Hz prints (needs 2+ minutes).
+
+        Called for every market, every strategy, every tick; the answer only changes when
+        the clock or the index changes, so it is computed once per (time, last print)."""
+        last = self.index[-1] if self.index else None
+        key = (now_ms, halflife_s, last, len(self.index))
+        if key != self._sigma_key:
+            self._sigma_key, self._sigma = key, self._sigma_uncached(now_ms, halflife_s)
+        return self._sigma
+
+    def _sigma_uncached(self, now_ms: int, halflife_s: float) -> float | None:
         pts = [(ts, v) for ts, v in self.index if ts >= now_ms - 1800 * 1000]
         if len(pts) < 120:
             return None

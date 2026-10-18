@@ -272,6 +272,43 @@ function nowPanel(d, held) {
   );
 }
 
+// Execution and data-readiness are separate on purpose: execution can be
+// enabled while the pricing engine is still collecting the history required
+// to make a decision.  A warm-up must never look like a trade signal.
+function engineReadiness(d, execution) {
+  const needed = Math.max(0, Number(d?.min_history_s ?? 0));
+  const collected = Math.min(needed, Math.max(0, Number(d?.history_s ?? 0)));
+  const remaining = Math.max(0, needed - collected);
+  const percent = needed ? Math.min(100, (collected / needed) * 100) : 100;
+  const waiting = remaining > 0;
+  const execPaused = execution?.paused === true;
+  const execUnknown = !execution || execution.unknown_or_pending;
+  const mode = execUnknown ? "CHECKING" : execPaused ? "PAUSED" : "ACTIVE";
+  const modeTone = execUnknown || execPaused ? "warn" : "good";
+  const detail = execUnknown
+    ? "Execution status is loading. No order can be submitted until it is confirmed."
+    : execPaused
+      ? "Live execution is paused. The engine can watch markets but cannot send an order."
+      : "Live execution is active. A market still needs to pass every data check, then each order requires a separate Buy confirmation.";
+  const readiness = waiting
+    ? `Collecting settlement-index history · ${fmt.left(collected)} of ${fmt.left(needed)} · about ${fmt.left(remaining)} left`
+    : "Market data is ready for a decision. The engine will still wait whenever a price, liquidity, or safety check fails.";
+  return el("section", { class: `engine-readiness ${waiting ? "warming" : "ready"}`, "aria-label": "Live engine readiness" },
+    el("div", { class: "engine-readiness-main" },
+      el("div", { class: "eyebrow" }, "Live trading readiness"),
+      el("div", { class: "engine-readiness-title" }, waiting ? "Warming up — orders blocked" : "Data ready for decisions"),
+      el("div", { class: "engine-readiness-copy" }, readiness),
+      el("div", { class: "warm-track", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(percent)) },
+        el("span", { style: `width:${percent.toFixed(1)}%` })),
+      el("div", { class: "warm-caption" }, waiting ? "The engine needs 15 minutes of fresh settlement-index ticks after a restart before it prices a market." : "Fresh history is available. A BUY signal can only appear after all entry gates pass."),
+    ),
+    el("div", { class: "execution-state" },
+      el("span", { class: `pill ${modeTone}` }, `LIVE EXECUTION · ${mode}`),
+      el("div", { class: "execution-state-copy" }, detail),
+    ),
+  );
+}
+
 function fifteenPanel(d, c, held) {
   const [q, sub] = questionFor(c);
   const h = held.get(c.ticker);
@@ -364,7 +401,10 @@ function helpBox(d) {
 }
 
 async function live(root) {
-  const [lv, paper] = await Promise.all([load("live"), load("paper")]);
+  const [lv, paper, execution] = await Promise.all([
+    load("live"), load("paper"),
+    fetch("/api/execution?action=status", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).catch(() => null),
+  ]);
   const d = lv?.data;
   if (!d) return root.append(empty("No live data yet. The engine on Fly publishes every 2 seconds once it starts."));
   const ageNow = Date.now() - d.updated_ms;
@@ -379,6 +419,7 @@ async function live(root) {
     el("span", { class: `pill ${gap == null ? "warn" : Math.abs(gap) <= d.config.max_spot_index_gap_bps ? "good" : "bad"}`, title: "Coinbase/Kraken/Bitstamp vs the settlement index. A big gap means spot is moving faster than the index: the engine waits so you don't buy on a lag." }, gap == null ? "exchanges –" : `exchanges ${gap >= 0 ? "+" : ""}${gap.toFixed(1)} bp`),
   ));
   if (stale) root.append(el("div", { class: "banner" }, `Live feed is ${fmt.age(ageNow)} old. The engine may be restarting; calls are NOT current.`));
+  root.append(engineReadiness(d, execution));
   root.append(nowPanel(d, held));
   const fifteen = d.calls.filter((c) => c.series === "KXBTC15M");
   const hourly = d.calls.filter((c) => c.series !== "KXBTC15M");
