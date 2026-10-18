@@ -190,7 +190,8 @@ function render(data, quiet = false) {
   if (!strategyEdited) element("strategy").value = data.autopilot && data.longshot ? "both" : data.longshot ? "longshot" : "autopilot";
   element("dashboard-link").href = validBase(saved.base) + "/#positions";
   const coverage = data.market_coverage;
-  element("strategy-help").textContent = `Scan target: Jev ${data.autopilot_every_s || 1}s · long-shot ${data.longshot_every_s || 1}s. BTC 15-minute + hourly strikes${coverage ? ` · ${coverage.entry_markets} entry markets · ${coverage.managed_positions} open positions managed` : ""}. No extra tabs needed; all positions sync to the dashboard. Slow broker/model replies can extend a scan.`;
+  const scanner = data.scanner;
+  element("strategy-help").textContent = `${scanner?.running ? "SCANNING LIVE" : "Scanner connecting"}${data.paused ? " · orders paused; market checks continue" : ""}. Scan target: Jev ${data.autopilot_every_s || 1}s · long-shot ${data.longshot_every_s || 1}s. BTC 15-minute + hourly strikes${coverage ? ` · ${coverage.entry_markets} entry markets · ${coverage.managed_positions} open positions managed` : ""}. No extra tabs needed. Slow broker/model replies can extend a scan.`;
   const of = (used, cents) => cents ? `${usd(used)} of ${usd(cents / 100)}` : usd(used);
   element("spent").textContent = of(data.purchase_spend, limits.purchase_spend_cents);
   element("budget").textContent = usd(data.remaining_purchase_budget);
@@ -205,7 +206,9 @@ function render(data, quiet = false) {
   element("scope").textContent = data.scope || "";
   renderAutopilot(data);
   renderLongshot(data);
-  if (data.paused) element("autopilot-state").textContent = data.auto_recovery ? "Waiting for Kalshi · auto-retry on" : "Trading stopped";
+  if (data.paused) element("autopilot-state").textContent = data.auto_recovery
+    ? "Scanning · recovering order access"
+    : data.scanner?.running ? "Scanning · orders paused" : "Trading stopped";
   else if (data.longshot && !data.autopilot) element("autopilot-state").textContent = "Long-shot bids are running";
   else if (data.autopilot) element("autopilot-state").textContent = "Jev is watching your markets";
   else element("autopilot-state").textContent = "Ready when you are";

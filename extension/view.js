@@ -62,6 +62,7 @@ export function plainOutcome(note) {
     return `${jev}. ${what}: filled ${o.filled_quantity ?? "0"} for $${o.fill_cost ?? "0"} + $${o.fees ?? "0"} fees (${o.status}).`;
   }
   if (outcome.startsWith("refused: Jev")) return `${outcome.slice(9)}. No order.`;
+  if (outcome.includes("autopilot stopped; review again after Start")) return "Order permission changed during this review. Market scanning continues; the next permitted check uses a fresh review. No order.";
   if (outcome.startsWith("error: ")) return `Couldn't get a usable answer from Jev (${outcome.slice(7)}). No order.`;
   if (outcome.includes("account positions differ from routed ledger")) {
     return "Paused for safety: your Kalshi account holds a trade autopilot didn't make (a manual trade). It resumes by itself once that position is sold or settles.";

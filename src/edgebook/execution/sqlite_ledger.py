@@ -149,14 +149,28 @@ class SQLiteLedger:
                 (now,),
             )
             state = self.state(db)
+            # Restore the owner's running intent, never a manual Stop or a latched
+            # safety block. Legacy restart pauses predate durable running intent.
+            restart_requested = bool(
+                (state.get("autopilot") or state.get("longshot"))
+                and (
+                    not state["paused"]
+                    or state.get("auto_recovery")
+                    or (state.get("pause_kind") == "restart" and "run_requested" not in state)
+                )
+            )
             state.update(
                 paused=True,
                 account_ms=0,
                 generation=state["generation"] + 1,
-                pause_kind="restart",
-                auto_recovery=False,
+                pause_kind="temporary" if restart_requested else state.get("pause_kind", "restart"),
+                auto_recovery=restart_requested,
+                run_requested=restart_requested,
                 recovery_checks=0,
-                error="server restarted; press Start after reconciliation",
+                recovery_last_ms=0,
+                error="Restart recovery; checking account automatically"
+                if restart_requested
+                else state.get("error") or "server restarted; press Start after reconciliation",
             )
             self.save_state(db, state)
             self.event(db, now, "restart", {"paused": True})
@@ -209,6 +223,7 @@ class SQLiteLedger:
                 if reason == "user paused"
                 else "safety",
                 auto_recovery=recover,
+                run_requested=recover,
                 recovery_checks=0,
                 recovery_last_ms=0,
             )
@@ -254,6 +269,7 @@ class SQLiteLedger:
                 pause_kind="",
                 auto_recovery=False,
                 recovery_checks=0,
+                run_requested=True,
             )
             self.save_state(db, state)
             self.event(db, now, "resume", {"unattended": bool(state.get("autopilot", False))})
