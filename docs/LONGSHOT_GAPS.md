@@ -1,5 +1,10 @@
 # Long-shot seller gap analysis — 2026-10-18
 
+> **Fee correction (2026-10-18, `docs/KALSHI_INCENTIVES.md`):** KXBTC15M, KXBTCD and KXBTC
+> charge makers no fee, but this study charged 1¢ per filled sale. Every filled ¢/contract figure
+> below is 1.00¢ too low. For example, all filled firings are −0.06¢ (not −1.06¢), and the
+> 15–60 minute rule is +0.56¢ earlier and −0.89¢ later. No interval clears zero.
+
 ## Question
 
 The long-shot seller (paper strategy `longshot`, and the real-money pilot that copies it)
