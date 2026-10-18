@@ -257,16 +257,26 @@ class KalshiBroker:
             response.raise_for_status()
 
     async def find_order(self, client_id: str, order_id: str | None) -> dict[str, Any] | None:
+        params = {"subaccount": self.subaccount, "exchange_index": self.exchange_index}
         if order_id:
-            return dict((await self.get(f"/portfolio/orders/{order_id}"))["order"])
+            try:
+                return dict((await self.get(f"/portfolio/orders/{order_id}", params))["order"])
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code != 404:
+                    raise
+                # A just-acknowledged order may reach the list before the ID read.
         rows = await self.pages(
             "/portfolio/orders",
             "orders",
-            {"subaccount": self.subaccount, "exchange_index": self.exchange_index},
+            params,
         )
         matches = [row for row in rows if row.get("client_order_id") == client_id]
         if len(matches) > 1:
             raise GuardError("duplicate client order ids at broker")
+        if matches and order_id and matches[0].get("order_id") != order_id:
+            raise GuardError("broker order id mismatch")
+        if not matches and order_id:
+            raise GuardError("acknowledged broker order not yet visible")
         return matches[0] if matches else None
 
     async def order_fills(self, order: dict[str, Any], intent: Intent) -> list[dict[str, Any]]:

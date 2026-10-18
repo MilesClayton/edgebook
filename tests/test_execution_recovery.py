@@ -96,3 +96,21 @@ async def test_unknown_order_never_enables_recovery(tmp_path: Path) -> None:
     assert result["status"] == "unknown"
     assert h.ledger.status()["unknown_or_pending"]
     assert not h.ledger.status()["auto_recovery"]
+
+
+async def test_acknowledged_order_visibility_failure_recovers(tmp_path: Path) -> None:
+    h = await running(tmp_path / "ledger.sqlite3")
+    original = h.service.reconcile
+
+    async def not_visible() -> None:
+        raise GuardError("acknowledged broker order not yet visible")
+
+    h.service.reconcile = not_visible  # type: ignore[method-assign]
+    with pytest.raises(GuardError, match="not yet visible"):
+        await h.service.refresh()
+    assert h.ledger.status()["auto_recovery"]
+    h.service.reconcile = original  # type: ignore[method-assign]
+    assert not await clean_check(h)
+    assert not await clean_check(h)
+    assert await clean_check(h)
+    assert h.broker.submissions == 0
