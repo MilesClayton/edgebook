@@ -101,6 +101,40 @@ pilot stop selling 15 minutes before close, and the pilot's Kalshi order expiry
 was consistent across both periods. It roughly halves the loss; it does **not** make the
 strategy profitable: every remaining variant is break-even to negative.
 
+## The paper account's actual trades (Oct 17 22:15 – Oct 18 12:15 UTC)
+
+`scripts/longshot_paper_trades.py` reads the paper account file (`/data/engine/paper-longshot.json`
+on the recorder) and treats each settled market as one held-to-result trade: 172 trades over
+47 closes, plus 9 still open. "Per trade" is the mean of each trade's ¢/contract; "size-weighted"
+is total P&L divided by total contracts, which is what the account actually earned.
+
+| Series | Trades | Long shot won | Per trade ¢ (95% interval) | Size-weighted ¢ | P&L |
+|---|---:|---:|---:|---:|---:|
+| 15-minute | 20 | 1 | +8.09 (−2.06 to +13.48) | +8.00 | +$4,546 |
+| Hourly above/below | 119 | 8 | −0.51 (−5.88 to +4.02) | −2.78 | −$5,192 |
+| Hourly range (`KXBTC`) | 33 | 3 | −1.60 (−11.59 to +7.24) | −19.56 | −$2,060 |
+| **All** | 172 | 12 | +0.28 (−3.96 to +4.18) | **−1.06** | **−$2,706** |
+
+Hourly above/below made money at 9 of its 14 closes. Two closes erased that: 06:00 ET lost
+$7,223 (three strikes paid out together) and 23:00 ET lost $2,328. Steady small wins and a rare
+large loss is the expected shape of selling long shots, so a run of good hours says little.
+
+**Why the 15-minute cut stays despite the paper result.** The 20 paper sales were all at 10–15¢,
+5.8–12.2 minutes before close. Their prices implied about 2.7 long-shot wins; one happened, which
+is likely by chance alone (about 26%). The backfill has 741 filled 15-minute sales over 30 days
+and loses on them in both periods. Twenty trades cannot outweigh that, but the paper account
+will keep the comparison running: if 15-minute sales keep winning over a few hundred trades,
+the cut should be revisited.
+
+Two leads from the paper trades, too small to act on yet:
+
+- Trades where the engine's fair value at fill was above the price paid did better
+  (+4.98¢ per trade, 41 trades, interval −1.87 to +10.57) than the rest (−1.19¢, 131 trades).
+  The backfill's simpler volatility model showed no such effect, so this may be the live
+  engine's settlement-index inputs adding something. It needs many more closes.
+- The range series (`KXBTC`) lost most per contract. The live pilot does not trade it
+  (`EDGEBOOK_EXECUTION_SERIES` is KXBTC15M and KXBTCD); the paper strategy does.
+
 ## What would actually move this
 
 1. **Real fills, not a proxy.** The recorder on Fly keeps trade prints with taker side and
