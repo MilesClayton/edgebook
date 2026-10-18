@@ -146,6 +146,10 @@ async def test_kalshi_backfill_keeps_tradeable_markets_and_skips_done_events(
     n_candle_calls = calls.count("/v2/markets/candlesticks")
     assert await kh.backfill(rest, tmp_path, "KXBTCD", days=1, now=NOW + timedelta(hours=1)) == 0
     assert calls.count("/v2/markets/candlesticks") == n_candle_calls
+    # keep_all also stores the never-tradeable market
+    full = tmp_path / "all"
+    assert await kh.backfill(rest, full, "KXBTCD", 1, NOW + timedelta(hours=1), keep_all=True) == 3
+    assert {m["ticker"] for m in kh.load_markets(full, "KXBTCD")} == {"A", "B", "D"}
 
 
 def test_horizon_rows_skip_before_open_and_missing_quotes() -> None:
