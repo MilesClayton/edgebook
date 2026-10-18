@@ -170,21 +170,27 @@ class ExecutionService:
                 account.get("resting_client_ids", ()),
             )
         except (Exception, asyncio.CancelledError) as error:
-            temporary = (
-                isinstance(error, (httpx.TransportError, OSError, TimeoutError))
-                or (
-                    isinstance(error, httpx.HTTPStatusError)
-                    and (error.response.status_code == 429 or error.response.status_code >= 500)
+            read_not_visible = isinstance(error, GuardError) and str(error) == (
+                "acknowledged broker order not yet visible"
+            )
+            temporary = read_not_visible or (
+                (
+                    isinstance(error, (httpx.TransportError, OSError, TimeoutError))
+                    or (
+                        isinstance(error, httpx.HTTPStatusError)
+                        and (error.response.status_code == 429 or error.response.status_code >= 500)
+                    )
+                    or (
+                        isinstance(error, GuardError)
+                        and str(error)
+                        in {
+                            "broker account data is stale",
+                            "broker account data predates the last submission",
+                        }
+                    )
                 )
-                or (
-                    isinstance(error, GuardError)
-                    and str(error)
-                    in {
-                        "broker account data is stale",
-                        "broker account data predates the last submission",
-                    }
-                )
-            ) and not self.ledger.status()["unknown_or_pending"]
+                and not self.ledger.status()["unknown_or_pending"]
+            )
             self.ledger.audit(
                 self.clock(),
                 "reconciliation_failed",
@@ -192,6 +198,9 @@ class ExecutionService:
                     "error_type": type(error).__name__,
                     "temporary": temporary,
                     "http_status": error.response.status_code
+                    if isinstance(error, httpx.HTTPStatusError)
+                    else None,
+                    "request_path": error.request.url.path
                     if isinstance(error, httpx.HTTPStatusError)
                     else None,
                 },

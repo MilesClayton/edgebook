@@ -154,6 +154,23 @@ async def test_signed_account_quote_and_paginated_orders(signer: KalshiSigner) -
     await broker.close()
 
 
+async def test_order_404_falls_back_to_scoped_list(signer: KalshiSigner) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["subaccount"] == "2"
+        assert request.url.params["exchange_index"] == "2"
+        if request.url.path.endswith("/fixture-order"):
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json={"orders": [wire_order()]})
+
+    broker = broker_for(signer, handle)
+    try:
+        order = await broker.find_order("fixture-client", "fixture-order")
+        assert order is not None
+        assert order["order_id"] == "fixture-order"
+    finally:
+        await broker.close()
+
+
 @pytest.mark.parametrize(
     ("action", "side", "book", "yes_price", "reduce"),
     [
