@@ -11,6 +11,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from edgebook.core.fees import trade_fee
+from edgebook.core.types import LiquidityRole
 from edgebook.recorder.rows import SCHEMAS
 from edgebook.research.final_minute import (
     MIN_VOL_PER_S,
@@ -184,7 +186,9 @@ def test_execute_buy_walks_depth_to_limit() -> None:
 
 
 def test_fees() -> None:
-    assert taker_fee(0.50, 1) == pytest.approx(0.02)  # 1.75c rounded up
+    # core.fees rounds the exact 1.75c up to the account's balance precision
+    assert taker_fee(0.50, 1) == float(trade_fee(1, Decimal("0.50"), LiquidityRole.TAKER))
+    assert 0.0175 <= taker_fee(0.50, 1) <= 0.02
     assert fee_per_contract(0.50) == pytest.approx(0.0175)
 
 
