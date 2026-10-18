@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Edgebook",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Budget-based Kalshi trading controls, Jev automation, live positions and market data.",
   "action": {
     "default_title": "Open persistent Edgebook controls"
