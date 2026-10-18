@@ -1,5 +1,5 @@
-// Persistent, read-only trading monitor on Kalshi pages. Order authorization
-// remains in the extension controls and persistent execution service.
+// Persistent cockpit. Controls run inside an extension-origin frame; Kalshi's
+// page cannot read its password, proposals, or manipulate its buttons.
 "use strict";
 (() => {
   const K = globalThis.EdgebookKalshi;
@@ -11,7 +11,8 @@
   style.textContent = `
     :host{all:initial;color-scheme:dark}
     *{box-sizing:border-box}
-    .panel{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:370px;max-width:calc(100vw - 32px);max-height:70vh;overflow:auto;font:13px/1.5 system-ui,sans-serif;color:#edf2f9;background:#0b1220;border:1px solid #314158;border-radius:14px;box-shadow:0 12px 38px #0006}
+    .panel{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:440px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;font:13px/1.5 system-ui,sans-serif;color:#edf2f9;background:#0b1220;border:1px solid #314158;border-radius:14px;box-shadow:0 12px 38px #0006}
+    iframe{display:block;width:100%;height:min(650px,72dvh);border:0;background:#090e17}header button{min-width:44px;min-height:44px}.monitor{margin:0;padding:0;border:0}.monitor>summary{padding:12px 16px;border-top:1px solid #28364b}
     header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #28364b}
     header strong{flex:1;font-size:14px;letter-spacing:.06em}
     .pill,.act{font-size:10px;font-weight:700;padding:4px 7px;border-radius:20px;background:#213147;color:#c0cee0;white-space:nowrap}
@@ -34,8 +35,16 @@
   toggle.title = "Collapse monitor";
   const body = document.createElement("div");
   body.className = "body";
+  const controlsFrame = document.createElement("iframe");
+  controlsFrame.title = "Edgebook live trading controls";
+  controlsFrame.src = chrome.runtime.getURL("popup.html");
+  const monitor = document.createElement("details");
+  monitor.className = "monitor";
+  const monitorSummary = document.createElement("summary");
+  monitorSummary.textContent = "Market forecast & activity";
+  monitor.append(monitorSummary, body);
   header.append(title, stateBadge, toggle);
-  panel.append(header, body);
+  panel.append(header, controlsFrame, monitor);
   root.append(style, panel);
   document.documentElement.append(host);
   let collapsed = false, lastHref = "", refreshing = false;
@@ -53,7 +62,8 @@
   }
   function setCollapsed(value) {
     collapsed = value;
-    body.hidden = value;
+    controlsFrame.hidden = value;
+    monitor.hidden = value;
     toggle.textContent = value ? "+" : "−";
     toggle.title = value ? "Expand monitor" : "Collapse monitor";
     toggle.setAttribute?.("aria-expanded", String(!value));
@@ -64,6 +74,14 @@
     if (!collapsed) refresh();
   });
   chrome.storage?.local?.get("panelCollapsed").then((saved) => setCollapsed(Boolean(saved.panelCollapsed))).catch(() => {});
+  chrome.runtime.onMessage?.addListener((message, sender, respond) => {
+    if (sender.id !== chrome.runtime.id || message?.type !== "edgebook:show-panel") return false;
+    setCollapsed(false);
+    chrome.storage?.local?.set({ panelCollapsed: false }).catch(() => {});
+    respond({ ok: true });
+    refresh();
+    return false;
+  });
 
   async function ask(ticker, quantity) {
     if (asking.has(ticker)) return;
@@ -103,7 +121,7 @@
     }
     const actions = document.createElement("div"); actions.className = "actions";
     const controls = document.createElement("a");
-    controls.textContent = "Trading controls";
+    controls.textContent = "Open controls in a tab";
     controls.href = chrome.runtime.getURL?.("popup.html") || "#";
     controls.target = "_blank"; controls.rel = "noopener";
     controls.addEventListener("click", async (event) => {
@@ -172,7 +190,7 @@
 
   async function refresh() {
     const ref = K.locate(location.href);
-    host.hidden = !ref;
+    host.hidden = false;
     lastRef = ref;
     if (!ref || refreshing) return;
     refreshing = true;

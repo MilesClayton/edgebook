@@ -31,6 +31,10 @@ test("actual order state is distinct from proposal and unknown outcomes", () => 
 test("extension reads Kalshi pages only and has no broker/gateway credential surface", async () => {
   const manifest = JSON.parse(await readFile(new URL("../../extension/manifest.json", import.meta.url)));
   assert.deepEqual(manifest.permissions, ["storage"]);
+  assert.equal(manifest.action.default_popup, undefined);
+  assert.deepEqual(manifest.web_accessible_resources, [{
+    resources: ["popup.html"], matches: ["https://kalshi.com/*", "https://*.kalshi.com/*"],
+  }]);
   assert.deepEqual(manifest.content_scripts, [{
     matches: ["https://kalshi.com/*", "https://*.kalshi.com/*"],
     js: ["kalshi-core.js", "kalshi.js"], run_at: "document_idle",

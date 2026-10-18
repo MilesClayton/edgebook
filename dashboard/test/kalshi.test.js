@@ -137,7 +137,7 @@ test("page panel renders the page's calls and hands Ask Jev to the background wo
   const timers = [];
   const messages = [];
   const document = { documentElement: html, createElement: (tag) => new Node(tag), getElementById: () => null };
-  const chrome = { runtime: { sendMessage: async (m) => {
+  const chrome = { runtime: { getURL: (path) => `chrome-extension://fixture/${path}`, sendMessage: async (m) => {
     messages.push(m);
     return m.type === "edgebook:live" ? { ok: true, live: LIVE, checked_ms: Date.now(), execution: { configured: true, enabled: true, paused: false, autopilot: true, positions: [], remaining_purchase_budget: "20.00", open_exposure: "0", realized_pnl: "0" } }
       : { ok: true, proposal: { expires_ms: Date.now() + 15000 }, summary: "BUY NO · KXBTCD-26OCT1717-T82099.99" };
@@ -150,6 +150,14 @@ test("page panel renders the page's calls and hands Ask Jev to the background wo
   await timers[0]();  // URL watcher triggers the first refresh
   await new Promise((r) => setTimeout(r, 0));
   const host = html.children[0];
+  const frame = host.find((n) => n.tag === "iframe");
+  assert.equal(frame.src, "chrome-extension://fixture/popup.html");
+  const collapse = host.find((n) => n.tag === "button" && n.textContent === "−");
+  collapse.listeners.click();
+  assert.equal(frame.hidden, true);
+  collapse.listeners.click();
+  assert.equal(frame.hidden, false);
+  assert.equal(host.find((n) => n.tag === "iframe"), frame);
   const text = host.text();
   assert.match(text, /Above \$82,100/);
   assert.match(text, /BUY DOWN/);

@@ -82,3 +82,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handle(message).then(sendResponse, (error) => sendResponse({ ok: false, error: error.message }));
   return true; // reply asynchronously
 });
+
+// The toolbar reveals the persistent cockpit instead of a disappearing popup.
+chrome.action?.onClicked?.addListener(async (tab) => {
+  if (tab?.id != null) {
+    try {
+      const reply = await chrome.tabs.sendMessage(tab.id, { type: "edgebook:show-panel" });
+      if (reply?.ok) return;
+    } catch { /* Not a Kalshi page, or the page needs a refresh. */ }
+  }
+  await chrome.tabs.create({ url: chrome.runtime.getURL("popup.html") });
+});
