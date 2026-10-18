@@ -126,7 +126,7 @@ class LiveSettings(BaseSettings):
     longshot_every_s: int = Field(default=1, ge=1, le=600)
     longshot_max_orders: int = Field(default=5, ge=1, le=100)
     longshot_event_cents: int = Field(default=500, gt=0, le=100_000_000)  # per hourly close
-    longshot_expire_s: int = Field(default=300, ge=60, le=3600)
+    longshot_expire_s: int = Field(default=900, ge=60, le=3600)  # matches the paper cut-off
     proof_strategy: str = "anchored"
     proof_min_trades: int = Field(default=200, ge=100)
     proof_min_days: int = Field(default=5, ge=3)
