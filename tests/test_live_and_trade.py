@@ -65,7 +65,7 @@ async def test_pricer_edges_and_filters(pricer: live.LivePricer) -> None:
     assert deep_itm is not None
     assert deep_itm.fair > 0.95
     assert deep_itm.best_side == "yes"
-    assert deep_itm.best_edge == pytest.approx(deep_itm.fair - 0.52 - 0.02, abs=1e-9)
+    assert deep_itm.best_edge == pytest.approx(deep_itm.fair - 0.52 - 0.0175, abs=1e-9)
     assert pricer.price(open_market("B", spot, "0.50", "0.50"), "S", spot, NOW) is None  # crossed
     assert pricer.price(open_market("C", spot, "0.50", "0.52", minutes=0.5), "S", spot, NOW) is None
     with pytest.raises(RuntimeError, match="refresh_spot"):

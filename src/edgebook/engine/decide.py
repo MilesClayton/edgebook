@@ -92,7 +92,7 @@ def fee(price: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
 
 def fill_fee(price: float, contracts: float, role: LiquidityRole = LiquidityRole.TAKER) -> float:
     """Fee for one fill of ``contracts`` at ``price``: Kalshi rounds the fill's total up to
-    a cent once, not each contract (``fee`` is the 1-contract, worst-case rounding)."""
+    the direct-member $0.0001 once, not each contract (``fee`` is the 1-contract fill)."""
     qty = Decimal(f"{contracts:.6f}")  # fractional fills exist; never round a fill to zero
     if qty <= 0:
         return 0.0
