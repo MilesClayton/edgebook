@@ -226,7 +226,7 @@ class SQLiteLedger:
             ):
                 return False
             self.check_account(db, state, now, max_age)
-            if now - state.get("recovery_last_ms", 0) < 5000:
+            if now - state.get("recovery_last_ms", 0) < 1000:
                 return False
             state["recovery_last_ms"] = now
             state["recovery_checks"] = state.get("recovery_checks", 0) + 1

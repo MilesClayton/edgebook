@@ -89,7 +89,7 @@
     if (execution.unknown_or_pending) return { label: "CHECK ORDER", title: "An order needs reconciliation", detail: "New orders are blocked until its outcome is confirmed.", tone: "warn" };
     if (execution.paused && execution.auto_recovery) return {
       label: "RECOVERING", title: "Waiting for Kalshi to recover",
-      detail: `Retrying every 5 seconds · ${execution.recovery_checks || 0}/3 clean checks. Your existing run resumes automatically after reconciliation.`, tone: "warn",
+      detail: `Retrying every second · ${execution.recovery_checks || 0}/3 clean checks. Your existing run resumes automatically after reconciliation.`, tone: "warn",
     };
     if (execution.paused) return { label: "STOPPED", title: "Trading is paused", detail: execution.error || "Save a budget and press Start in Controls when ready.", tone: "warn" };
     if (execution.autopilot || execution.longshot) return {

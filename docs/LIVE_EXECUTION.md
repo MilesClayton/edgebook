@@ -6,7 +6,7 @@ The Python recorder now has a real order adapter and a durable execution ledger.
 
 ## Current popup controls
 
-**Temporary interruptions recover automatically.** A network timeout, rate limit, broker 5xx response, or stale account read interrupts an already running automatic strategy without canceling its authorization. The recorder retries every five seconds and resumes after three spaced successful account reconciliations. Both views show RECOVERING and the clean-check count. Any failed check resets the count. Manual Stop, switching both strategies off, an unresolved order, account mismatch, failed cancellation, and server restarts remain paused until owner action. Recovery never submits an order itself; the existing strategy performs its normal checks on its next pass.
+**Temporary interruptions recover automatically.** A network timeout, rate limit, broker 5xx response, or stale account read interrupts an already running automatic strategy without canceling its authorization. The recorder retries every second and resumes after three spaced successful account reconciliations. Both views show RECOVERING and the clean-check count. Any failed check resets the count. Manual Stop, switching both strategies off, an unresolved order, account mismatch, failed cancellation, and server restarts remain paused until owner action. Recovery never submits an order itself; the existing strategy performs its normal checks on its next pass.
 
 The popup has **Live** and **Help & details** tabs. Save a dollar budget, choose Jev, long-shot, or both, then press **Start live trading**. Saving a budget pauses execution and cancels resting bids; it never activates trading. Start atomically configures the approach, reconciles, and resumes. Stop is available during other requests and blocks new authorizations while canceling resting orders. Existing fills remain open.
 
@@ -67,7 +67,7 @@ Do not use multiple Fly machines, independent replicated volumes, network SQLite
 
 On restart the service pauses, clears account freshness, and converts unfinished submissions to unknown. It discovers orders by the stored client ID, checks exact intent and fill identities, and reconciles again before the user can resume. Absence from a broker list is never evidence that an uncertain order was rejected. Orders older than the broker's current read window may need operator investigation against historical records; the service retains the reservation while unresolved.
 
-Reconciliation runs every five seconds and on status/control requests. Account lag, inconsistent fills, a missing response, position drift or an unsupported response pauses execution. Pause stops new authorizations; an already authorized/in-flight IOC can still fill. Autopilot and long-shot loops require explicit owner activation and remain subject to the durable ledger.
+Reconciliation runs every second and on status/control requests. Account lag, inconsistent fills, a missing response, position drift or an unsupported response pauses execution. Pause stops new authorizations; an already authorized/in-flight IOC can still fill. Autopilot and long-shot loops require explicit owner activation and remain subject to the durable ledger.
 
 Back up SQLite with its backup API or a consistent volume snapshot, including WAL state as appropriate. Restore to the same owner/account binding, reconcile while paused, then explicitly resume. The service must never fail over by silently creating an empty ledger.
 
