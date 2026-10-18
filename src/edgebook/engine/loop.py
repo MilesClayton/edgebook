@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 TRADED_SERIES = ("KXBTC15M", "KXBTCD")
 HOURLY_STRIKES_SHOWN = 6
 DECISION_LOG_EVERY_MS = 10_000
-LONGSHOT_EVERY_MS = 5_000  # the long-shot seller re-quotes every 5 s (it evaluates many strikes)
+LONGSHOT_EVERY_MS = 1_000  # refresh every second across all eligible strikes
 # the data checks a long-shot sale needs (the model-only gates do not apply to it)
 LONGSHOT_DATA_GATES = (
     "market open",
@@ -263,7 +263,7 @@ class LiveEngine:
         t = self.clock()
         for r in self.runners:
             if r.spec.mode == "longshot" and t - r.last_tick_ms < LONGSHOT_EVERY_MS:
-                # re-quote every few seconds; fills from real prints are still matched now
+                # Prints are still matched between scheduled quote evaluations.
                 if r.maker is not None:
                     r.maker.match(self.state, r.account)
                 continue
