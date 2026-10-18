@@ -10,7 +10,7 @@ match the tick-replay research model (``research.tick``):
 - a print exactly at our price first uses up the volume that was already
   queued at that price when we joined; a print through our price means every
   bid at our price was taken, so we fill (up to the print's size);
-- fills pay Kalshi's maker fee, and the order never crosses the spread.
+- fills pay Kalshi's maker fee (zero on BTC series), and the order never crosses the spread.
 
 Orders are re-posted (losing queue priority) when the target price changes,
 and cancelled when a data check fails or the market is about to close.

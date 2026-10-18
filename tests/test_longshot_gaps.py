@@ -44,9 +44,9 @@ def firing(**kw: object) -> Firing:
 
 
 def test_seller_pnl_is_kept_premium_minus_maker_fee() -> None:
-    # sell a 5c long shot = buy the favourite at 0.95 (maker fee 1c, rounded up)
-    assert seller_pnl(0.05, False) == pytest.approx(0.04)
-    assert seller_pnl(0.05, True) == pytest.approx(-0.96)
+    # sell a 5c long shot = buy the favourite at 0.95; BTC series charge makers nothing
+    assert seller_pnl(0.05, False) == pytest.approx(0.05)
+    assert seller_pnl(0.05, True) == pytest.approx(-0.95)
 
 
 def test_long_shot_side_follows_the_paper_rule() -> None:
@@ -90,7 +90,7 @@ def test_event_bootstrap_and_summary() -> None:
     s = summary([firing(), firing(event="E2", won_long=True, pnl=seller_pnl(0.05, True))])
     assert s["n"] == 2
     assert s["closes"] == 2
-    assert s["mean_cents"] == pytest.approx(-46.0)
+    assert s["mean_cents"] == pytest.approx(-45.0)
 
 
 def test_chronological_split_keeps_each_close_in_one_part() -> None:

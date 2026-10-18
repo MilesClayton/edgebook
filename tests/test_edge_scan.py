@@ -129,7 +129,7 @@ def test_scan_finds_parity_jumps_and_final_minute(tmp_path: Path) -> None:
 
 def test_taker_fee_and_spot_row() -> None:
     assert es.taker_fee(0.5) == pytest.approx(0.0175)
-    assert es.taker_fee(0.99, 1) == pytest.approx(0.01)  # one contract rounds up to a cent
+    assert es.taker_fee(0.99, 1) == pytest.approx(0.0007)  # 0.000693 up to $0.0001
     snap = CompositeSnapshot(
         5,
         82_000.0,

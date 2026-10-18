@@ -164,9 +164,9 @@ def test_context_fills_queue_and_settlement(tmp_path: Path) -> None:
     r = tick.replay(tmp_path, Probe())
     assert r.maker_fills == 1  # 50 ahead in queue, 30 per print: fills on the third print
     tags = r.by_tag
-    assert tags["taker_yes"].mean == pytest.approx(1 - 0.47 - 0.02)
-    assert tags["maker"].mean == pytest.approx(1 - 0.45 - 0.01)
-    assert tags["taker_no"].mean == pytest.approx(0.53 - 0.02 - 0.55 - 0.02)  # sold back at NO bid
+    assert tags["taker_yes"].mean == pytest.approx(1 - 0.47 - 0.0175)
+    assert tags["maker"].mean == pytest.approx(1 - 0.45)
+    assert tags["taker_no"].mean == pytest.approx(0.53 - 0.0175 - 0.55 - 0.0174)  # sold at NO bid
     assert "expires" not in tags
     assert r.open_positions == 0
 
